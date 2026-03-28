@@ -1,0 +1,22 @@
+# Echo Loop Generator Configuration
+# Based on "Echo: Rebuilding the Natural Reflex of Language" by H. Reeve
+# T-S-N-S-T-S (Target → Silence → Native → Silence → Target → Silence)
+
+timing:
+  after_first_target: 0.8    # seconds of silence after first target audio
+  after_native: 0.5          # seconds of silence after native (Chinese) audio
+  after_second_target: 1.2   # seconds of silence after second target audio (loop gap)
+
+tts:
+  voice: "zh-CN-XiaoxiaoNeural"   # Chinese TTS voice
+  rate: "+0%"                      # Speech rate adjustment (-50% to +50%)
+  pitch: "+0Hz"                    # Pitch adjustment
+
+output:
+  format: "m4a"
+  bitrate: "192k"
+  sample_rate: 44100
+
+lrc:
+  delimiter: "-"              # separator between target text and native text
+  split_strategy: "last"      # "last" = split on last delimiter, "first" = split on first
