@@ -4,12 +4,15 @@
 
 # Mode: "audio" or "text" (optional — if omitted, auto-detected from paths;
 #        if both audio and text paths exist, defaults to audio)
+#        In batch mode, mode acts as a filter: "audio" scans for audio+lrc
+#        pairs only, "text" scans for text files only, omitted = both.
 # mode: "audio"
 
 # File paths (CLI arguments override these)
 paths:
-  audio: "/Users/sudami/Library/Mobile Documents/iCloud~com~cubeTC~MP3/Documents/mp3music/notebookLM/Programming/2026-02-16_23-28-59_English/202602/【完结】【CS61B精翻双语·英文原声】伯克利大学《算法与数据结构》(2024) p04 Lecture 4 - Lists II SLLists.m4a"              # source audio file — audio mode (mp3, wav, m4a, etc.)
-  lrc: "/Users/sudami/Library/Mobile Documents/iCloud~com~cubeTC~MP3/Documents/mp3music/notebookLM/Programming/2026-02-16_23-28-59_English/202602/【完结】【CS61B精翻双语·英文原声】伯克利大学《算法与数据结构》(2024) p04 Lecture 4 - Lists II SLLists.lrc"                # LRC subtitle file — audio mode
+  scan: ""               # folder path — triggers batch mode (processes all files)
+  audio: ""              # source audio file — audio mode (mp3, wav, m4a, etc.)
+  lrc: ""                # LRC subtitle file — audio mode
   text: ""               # bilingual text file — text-only mode
   output: ""             # output audio file (default: <input_name>_echo.<format>)
   output_lrc: ""         # output LRC file (default: same as output with .lrc)
