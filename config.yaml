@@ -10,7 +10,7 @@
 
 # File paths (CLI arguments override these)
 paths:
-  scan: ""               # folder path — triggers batch mode (processes all files)
+  scan: "/Users/sudami/Library/Mobile Documents/iCloud~com~cubeTC~MP3/Documents/mp3music/notebookLM/Programming/2026-03-29_21-51-54_English"               # folder path — triggers batch mode (processes all files)
   audio: ""              # source audio file — audio mode (mp3, wav, m4a, etc.)
   lrc: ""                # LRC subtitle file — audio mode
   text: ""               # bilingual text file — text-only mode
