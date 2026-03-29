@@ -28,6 +28,7 @@ from audio.splitter import load_audio, extract_all_segments
 from audio.tts_generator import generate_native_audio
 from audio.assembler import assemble_all_loops, EchoTiming
 from export.exporter import export_audio
+from export.lrc_writer import generate_echo_lrc
 
 
 def load_config(config_path: str | Path | None = None) -> dict:
@@ -245,6 +246,12 @@ def main():
         format=config["output"]["format"],
         bitrate=config["output"]["bitrate"],
         sample_rate=config["output"]["sample_rate"],
+    )
+
+    lrc_output_path = output_path.with_suffix(".lrc")
+    generate_echo_lrc(
+        segments, target_audios, native_audios, timing,
+        lrc_output_path, delimiter=config["lrc"]["delimiter"],
     )
 
     # Cleanup
