@@ -6,9 +6,10 @@ Generates T-S-N-S-T-S (Target → Silence → Native → Silence → Target → 
 audio files for language learning, based on "Echo: Rebuilding the Natural Reflex
 of Language" by H. Reeve.
 
-Two modes:
+Three modes:
   Audio mode:  python main.py lesson01.mp3 lesson01.lrc
   Text mode:   python main.py --text phrases.txt
+  Batch mode:  python main.py --scan /path/to/folder
   Config-only: python main.py  (paths set in config.yaml)
 """
 
@@ -27,6 +28,7 @@ from audio.tts_generator import generate_native_audio, generate_target_audio
 from audio.assembler import assemble_all_loops, EchoTiming
 from export.exporter import export_audio
 from export.lrc_writer import generate_echo_lrc
+from scanner.scanner import scan_folder, print_scan_summary, ScanItem
 
 
 def load_config(config_path: str | Path | None = None) -> dict:
@@ -34,6 +36,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
     defaults = {
         "mode": "",
         "paths": {
+            "scan": "",
             "audio": "",
             "lrc": "",
             "text": "",
@@ -99,6 +102,11 @@ Modes:
     %(prog)s --text phrases.txt
     %(prog)s --text phrases.txt -o output/echo.m4a
 
+  Batch mode (scan a folder for all audio+LRC pairs and/or text files):
+    %(prog)s --scan /path/to/lessons
+    %(prog)s --scan /path/to/lessons --mode audio
+    %(prog)s --scan /path/to/lessons --mode text
+
   Config-only (all paths set in config.yaml):
     %(prog)s
     %(prog)s -c my_config.yaml
@@ -119,6 +127,10 @@ Modes:
         "--text", "-t", dest="text_file", default=None,
         help="Bilingual text file — text-only mode",
     )
+    input_group.add_argument(
+        "--scan", "-s", dest="scan_dir", default=None,
+        help="Folder to scan for batch processing",
+    )
 
     # --- Mode override ---
     parser.add_argument(
@@ -130,11 +142,11 @@ Modes:
     output_group = parser.add_argument_group("Output paths")
     output_group.add_argument(
         "-o", "--output", default=None,
-        help="Output audio file path",
+        help="Output audio file path (single-file mode only)",
     )
     output_group.add_argument(
         "--output-lrc", default=None,
-        help="Output LRC file path",
+        help="Output LRC file path (single-file mode only)",
     )
 
     # --- Config ---
@@ -205,6 +217,8 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["paths"]["lrc"] = args.lrc
     if args.text_file:
         config["paths"]["text"] = args.text_file
+    if args.scan_dir:
+        config["paths"]["scan"] = args.scan_dir
     if args.output:
         config["paths"]["output"] = args.output
     if args.output_lrc:
@@ -242,13 +256,18 @@ def resolve_mode(config: dict) -> str:
     Determine which mode to run.
 
     Priority:
+      0. If scan path is set → "batch"
       1. Explicit mode flag (CLI --mode or config mode:)
       2. Auto-detect from paths — if both audio+lrc and text exist, audio wins
       3. Error if no paths are set at all
     """
-    mode = config.get("mode", "").strip().lower()
     paths = config["paths"]
 
+    # Batch mode check — scan path takes precedence
+    if paths.get("scan"):
+        return "batch"
+
+    mode = config.get("mode", "").strip().lower()
     has_audio = bool(paths.get("audio")) and bool(paths.get("lrc"))
     has_text = bool(paths.get("text"))
 
@@ -269,7 +288,7 @@ def resolve_mode(config: dict) -> str:
         return "text"
 
     print(
-        "Error: no input specified. Provide audio+lrc or --text via CLI or config.yaml",
+        "Error: no input specified. Provide audio+lrc, --text, or --scan via CLI or config.yaml",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -297,6 +316,24 @@ def resolve_output_paths(config: dict, mode: str) -> tuple[Path, Path]:
         lrc_out = Path(paths["output_lrc"])
     else:
         lrc_out = audio_out.with_suffix(".lrc")
+
+    return audio_out, lrc_out
+
+
+def resolve_output_paths_for_item(item: ScanItem, config: dict) -> tuple[Path, Path]:
+    """Determine output paths for a single batch item (same folder, _echo suffix)."""
+    ext = config["output"]["format"]
+
+    if item.mode == "audio":
+        source = item.audio_path
+    else:
+        source = item.text_path
+
+    stem = source.stem
+    parent = source.parent
+
+    audio_out = parent / f"{stem}_echo.{ext}"
+    lrc_out = audio_out.with_suffix(".lrc")
 
     return audio_out, lrc_out
 
@@ -482,6 +519,208 @@ def run_text_mode(config: dict) -> None:
     )
 
 
+def run_batch_mode(config: dict) -> None:
+    """Batch mode: scan a folder and process all matching files."""
+    scan_path = Path(config["paths"]["scan"])
+    mode_filter = config.get("mode", "").strip().lower()
+
+    # In batch mode, the mode field filters what to scan for
+    # (not the top-level mode which is "batch")
+    if mode_filter not in ("audio", "text"):
+        mode_filter = ""
+
+    timing = EchoTiming(
+        after_first_target=config["timing"]["after_first_target"],
+        after_native=config["timing"]["after_native"],
+        after_second_target=config["timing"]["after_second_target"],
+    )
+
+    # Banner
+    print("=" * 60)
+    print("  Echo Loop Generator — Batch Mode")
+    print("  T → S → N → S → T → S")
+    print("=" * 60)
+    print(f"  Scan folder: {scan_path}")
+    if mode_filter:
+        print(f"  Filter:      {mode_filter} only")
+    else:
+        print(f"  Filter:      auto (audio pairs + text files)")
+    print(f"  Timing:      {timing.after_first_target}s / "
+          f"{timing.after_native}s / {timing.after_second_target}s")
+    print(f"  Native TTS:  {config['tts']['native_voice']}")
+    if mode_filter in ("", "text"):
+        print(f"  Target TTS:  {config['tts']['target_voice']}")
+    print("=" * 60)
+
+    # Scan
+    print("\n  Scanning folder...")
+    items = scan_folder(scan_path, mode=mode_filter)
+    print_scan_summary(items)
+
+    if not items:
+        print("\n  Nothing to process.")
+        return
+
+    # Process each item
+    succeeded: list[str] = []
+    failed: list[tuple[str, str]] = []
+    total = len(items)
+
+    for idx, item in enumerate(items, 1):
+        label = item.label
+        print(f"\n{'─' * 60}")
+        print(f"  [{idx}/{total}] {label}")
+        print(f"{'─' * 60}")
+
+        try:
+            # Build a per-item config by overriding paths
+            item_config = _config_for_item(config, item)
+            output_path, lrc_output_path = resolve_output_paths_for_item(item, config)
+
+            if item.mode == "audio":
+                _run_single_audio(item_config, item, timing, output_path, lrc_output_path)
+            else:
+                _run_single_text(item_config, item, timing, output_path, lrc_output_path)
+
+            succeeded.append(label)
+
+        except Exception as e:
+            failed.append((label, str(e)))
+            print(f"\n  ✗ Failed: {e}")
+
+    # Summary
+    print(f"\n{'=' * 60}")
+    print(f"  Batch Complete")
+    print(f"{'=' * 60}")
+    print(f"  ✓ Succeeded: {len(succeeded)}")
+    if failed:
+        print(f"  ✗ Failed:    {len(failed)}")
+        for name, error in failed:
+            # Truncate long error messages
+            short_err = error if len(error) <= 80 else error[:77] + "..."
+            print(f"    - {name}: {short_err}")
+    print(f"{'=' * 60}")
+
+
+def _config_for_item(config: dict, item: ScanItem) -> dict:
+    """Create a config copy with paths set for a specific batch item."""
+    import copy
+    c = copy.deepcopy(config)
+    c["paths"]["scan"] = ""  # clear scan to avoid recursion confusion
+
+    if item.mode == "audio":
+        c["paths"]["audio"] = str(item.audio_path)
+        c["paths"]["lrc"] = str(item.lrc_path)
+        c["paths"]["text"] = ""
+    else:
+        c["paths"]["text"] = str(item.text_path)
+        c["paths"]["audio"] = ""
+        c["paths"]["lrc"] = ""
+
+    # Clear single-file output overrides — batch uses _echo suffix
+    c["paths"]["output"] = ""
+    c["paths"]["output_lrc"] = ""
+
+    return c
+
+
+def _run_single_audio(
+    config: dict,
+    item: ScanItem,
+    timing: EchoTiming,
+    output_path: Path,
+    lrc_output_path: Path,
+) -> None:
+    """Process a single audio+LRC pair in batch mode."""
+    audio_path = item.audio_path
+    lrc_path = item.lrc_path
+
+    print(f"  Audio: {audio_path.name}")
+    print(f"  LRC:   {lrc_path.name}")
+    print(f"  →      {output_path.name}")
+
+    # Load source audio
+    source_audio = load_audio(audio_path)
+    audio_duration_ms = len(source_audio)
+    print(f"  Loaded: {audio_duration_ms / 1000:.1f}s")
+
+    # Parse LRC
+    segments = parse_lrc(
+        lrc_path,
+        delimiter=config["lrc"]["delimiter"],
+        split_strategy=config["lrc"]["split_strategy"],
+        audio_duration_ms=audio_duration_ms,
+    )
+    print(f"  Segments: {len(segments)}")
+
+    # Extract target audio
+    target_audios = extract_all_segments(source_audio, segments)
+
+    # Generate native TTS
+    work_dir = Path(tempfile.mkdtemp(prefix="echo_batch_"))
+    native_audios = generate_native_audio(
+        segments,
+        voice=config["tts"]["native_voice"],
+        rate=config["tts"]["rate"],
+        pitch=config["tts"]["pitch"],
+        work_dir=work_dir,
+    )
+
+    # Assemble and export
+    _assemble_and_export(
+        segments, target_audios, native_audios,
+        timing, config, output_path, lrc_output_path, work_dir,
+    )
+
+
+def _run_single_text(
+    config: dict,
+    item: ScanItem,
+    timing: EchoTiming,
+    output_path: Path,
+    lrc_output_path: Path,
+) -> None:
+    """Process a single text file in batch mode."""
+    text_path = item.text_path
+
+    print(f"  Text: {text_path.name}")
+    print(f"  →     {output_path.name}")
+
+    # Parse text
+    segments = parse_text(
+        text_path,
+        delimiter=config["lrc"]["delimiter"],
+        split_strategy=config["lrc"]["split_strategy"],
+    )
+    print(f"  Segments: {len(segments)}")
+
+    work_dir = Path(tempfile.mkdtemp(prefix="echo_batch_"))
+
+    # Generate target TTS
+    target_audios = generate_target_audio(
+        segments,
+        voice=config["tts"]["target_voice"],
+        rate=config["tts"]["rate"],
+        pitch=config["tts"]["pitch"],
+        work_dir=work_dir,
+    )
+
+    # Generate native TTS
+    native_audios = generate_native_audio(
+        segments,
+        voice=config["tts"]["native_voice"],
+        rate=config["tts"]["rate"],
+        pitch=config["tts"]["pitch"],
+        work_dir=work_dir,
+    )
+
+    # Assemble and export
+    _assemble_and_export(
+        segments, target_audios, native_audios,
+        timing, config, output_path, lrc_output_path, work_dir,
+    )
+
+
 def main():
     args = parse_args()
     config = load_config(args.config)
@@ -489,7 +728,9 @@ def main():
 
     mode = resolve_mode(config)
 
-    if mode == "text":
+    if mode == "batch":
+        run_batch_mode(config)
+    elif mode == "text":
         run_text_mode(config)
     else:
         run_audio_mode(config)
