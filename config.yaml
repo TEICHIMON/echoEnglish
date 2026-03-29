@@ -2,15 +2,28 @@
 # Based on "Echo: Rebuilding the Natural Reflex of Language" by H. Reeve
 # T-S-N-S-T-S (Target → Silence → Native → Silence → Target → Silence)
 
+# Mode: "audio" or "text" (optional — if omitted, auto-detected from paths;
+#        if both audio and text paths exist, defaults to audio)
+# mode: "audio"
+
+# File paths (CLI arguments override these)
+paths:
+  audio: "/Users/sudami/Library/Mobile Documents/iCloud~com~cubeTC~MP3/Documents/mp3music/notebookLM/Programming/2026-02-16_23-28-59_English/202602/【完结】【CS61B精翻双语·英文原声】伯克利大学《算法与数据结构》(2024) p04 Lecture 4 - Lists II SLLists.m4a"              # source audio file — audio mode (mp3, wav, m4a, etc.)
+  lrc: "/Users/sudami/Library/Mobile Documents/iCloud~com~cubeTC~MP3/Documents/mp3music/notebookLM/Programming/2026-02-16_23-28-59_English/202602/【完结】【CS61B精翻双语·英文原声】伯克利大学《算法与数据结构》(2024) p04 Lecture 4 - Lists II SLLists.lrc"                # LRC subtitle file — audio mode
+  text: ""               # bilingual text file — text-only mode
+  output: ""             # output audio file (default: <input_name>_echo.<format>)
+  output_lrc: ""         # output LRC file (default: same as output with .lrc)
+
 timing:
   after_first_target: 0.8    # seconds of silence after first target audio
-  after_native: 0.5          # seconds of silence after native (Chinese) audio
+  after_native: 0.5          # seconds of silence after native audio
   after_second_target: 1.2   # seconds of silence after second target audio (loop gap)
 
 tts:
-  voice: "zh-CN-XiaoxiaoNeural"   # Chinese TTS voice
-  rate: "+0%"                      # Speech rate adjustment (-50% to +50%)
-  pitch: "+0Hz"                    # Pitch adjustment
+  target_voice: "ja-JP-NanamiNeural"   # Target language TTS voice (text-only mode)
+  native_voice: "zh-CN-XiaoxiaoNeural" # Native language TTS voice
+  rate: "+0%"                          # Speech rate adjustment (-50% to +50%)
+  pitch: "+0Hz"                        # Pitch adjustment
 
 output:
   format: "m4a"

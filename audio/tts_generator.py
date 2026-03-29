@@ -1,8 +1,9 @@
 """
 TTS generator module.
 
-Generates Chinese (native language) audio from text using edge-tts.
-Supports async batch generation for efficiency.
+Generates audio from text using edge-tts.
+Supports both native language (Chinese) and target language TTS generation.
+Uses async batch generation for efficiency.
 """
 
 import asyncio
@@ -38,17 +39,18 @@ async def _generate_batch_tts(
     voice: str = "zh-CN-XiaoxiaoNeural",
     rate: str = "+0%",
     pitch: str = "+0Hz",
+    prefix: str = "tts",
 ) -> list[Path]:
     """
     Generate TTS audio for multiple texts concurrently.
-    
+
     Returns list of output file paths in same order as input texts.
     """
     output_paths = []
     tasks = []
 
     for i, text in enumerate(texts):
-        out_path = output_dir / f"tts_{i:04d}.mp3"
+        out_path = output_dir / f"{prefix}_{i:04d}.mp3"
         output_paths.append(out_path)
         tasks.append(_generate_single_tts(text, str(out_path), voice, rate, pitch))
 
@@ -67,6 +69,36 @@ async def _generate_batch_tts(
     return output_paths
 
 
+def _run_batch_tts(
+    texts: list[str],
+    work_dir: Path,
+    voice: str,
+    rate: str,
+    pitch: str,
+    prefix: str = "tts",
+) -> list[AudioSegment]:
+    """
+    Run batch TTS and load results into AudioSegment objects.
+
+    Shared logic for both target and native TTS generation.
+    """
+    output_paths = asyncio.run(
+        _generate_batch_tts(texts, work_dir, voice, rate, pitch, prefix)
+    )
+
+    audios = []
+    for path in output_paths:
+        if path.exists() and path.stat().st_size > 0:
+            audio = AudioSegment.from_file(str(path), format="mp3")
+            audios.append(audio)
+        else:
+            idx = output_paths.index(path)
+            print(f"  Warning: TTS failed for '{texts[idx][:30]}...', using silence")
+            audios.append(AudioSegment.silent(duration=500))
+
+    return audios
+
+
 def generate_native_audio(
     segments: list[Segment],
     voice: str = "zh-CN-XiaoxiaoNeural",
@@ -75,15 +107,15 @@ def generate_native_audio(
     work_dir: Path | None = None,
 ) -> list[AudioSegment]:
     """
-    Generate Chinese TTS audio for all segments.
-    
+    Generate native language (Chinese) TTS audio for all segments.
+
     Args:
         segments: List of Segment objects with native_text
         voice: edge-tts voice name
         rate: Speech rate adjustment
         pitch: Pitch adjustment
         work_dir: Directory for temp files (auto-created if None)
-        
+
     Returns:
         List of AudioSegment objects for the native language audio
     """
@@ -93,21 +125,35 @@ def generate_native_audio(
         work_dir.mkdir(parents=True, exist_ok=True)
 
     texts = [seg.native_text for seg in segments]
+    return _run_batch_tts(texts, work_dir, voice, rate, pitch, prefix="native")
 
-    # Run async TTS generation
-    output_paths = asyncio.run(
-        _generate_batch_tts(texts, work_dir, voice, rate, pitch)
-    )
 
-    # Load generated audio files into AudioSegment objects
-    native_audios = []
-    for path in output_paths:
-        if path.exists() and path.stat().st_size > 0:
-            audio = AudioSegment.from_file(str(path), format="mp3")
-            native_audios.append(audio)
-        else:
-            # Fallback: create a short silence if TTS failed
-            print(f"  Warning: TTS failed for '{texts[output_paths.index(path)][:30]}...', using silence")
-            native_audios.append(AudioSegment.silent(duration=500))
+def generate_target_audio(
+    segments: list[Segment],
+    voice: str = "ja-JP-NanamiNeural",
+    rate: str = "+0%",
+    pitch: str = "+0Hz",
+    work_dir: Path | None = None,
+) -> list[AudioSegment]:
+    """
+    Generate target language TTS audio for all segments.
 
-    return native_audios
+    Used in text-only mode where no source audio file is provided.
+
+    Args:
+        segments: List of Segment objects with target_text
+        voice: edge-tts voice name for the target language
+        rate: Speech rate adjustment
+        pitch: Pitch adjustment
+        work_dir: Directory for temp files (auto-created if None)
+
+    Returns:
+        List of AudioSegment objects for the target language audio
+    """
+    if work_dir is None:
+        work_dir = Path(tempfile.mkdtemp(prefix="echo_tts_"))
+    else:
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+    texts = [seg.target_text for seg in segments]
+    return _run_batch_tts(texts, work_dir, voice, rate, pitch, prefix="target")
