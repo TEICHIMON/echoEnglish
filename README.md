@@ -1,6 +1,6 @@
 # Echo Loop Generator
 
-Generate **T•N•T** (Target → Native → Target) Echo Loop audio files for language learning, with both audio-extraction and text-only TTS modes.
+Generate **T•N•T** (Target → Native → Target) Echo Loop audio files for language learning, with audio-extraction, text-only TTS, and batch modes.
 
 Based on *"Echo: Rebuilding the Natural Reflex of Language"* by H. Reeve.
 
@@ -14,18 +14,39 @@ The Echo Loop follows the **T-S-N-S-T-S** pattern:
 
 This structure uses the reflex energy of your native language to ignite comprehension of the target language — not through translation, but through resonance.
 
-## Two Modes
+## Three Modes
 
-**Audio mode** — you supply a source audio file and an LRC subtitle file. Target audio is extracted from the recording; native audio is generated via TTS.
+### Audio Mode
 
-```
-source.mp3 + source.lrc  →  echo_loop.m4a + echo_loop.lrc
-```
-
-**Text-only mode** — you supply a plain text file with bilingual entries. Both target and native audio are generated entirely via TTS. No source recording needed.
+You supply a source audio file and an LRC subtitle file. Target audio is extracted from the recording; native audio is generated via TTS.
 
 ```
-phrases.txt  →  echo_loop.m4a + echo_loop.lrc
+source.mp3 + source.lrc  →  source_echo.m4a + source_echo.lrc
+```
+
+### Text-Only Mode
+
+You supply a plain text file with bilingual entries. Both target and native audio are generated entirely via TTS. No source recording needed.
+
+```
+phrases.txt  →  phrases_echo.m4a + phrases_echo.lrc
+```
+
+### Batch Mode
+
+You point at a folder. The scanner finds all audio+LRC pairs and/or text files and processes them one by one. Output files are written to the same folder with an `_echo` suffix.
+
+```
+lessons/
+  ├── lesson01.mp3
+  ├── lesson01.lrc
+  ├── lesson02.mp3
+  ├── lesson02.lrc
+  └── vocab.txt
+→
+  ├── lesson01_echo.m4a + lesson01_echo.lrc
+  ├── lesson02_echo.m4a + lesson02_echo.lrc
+  └── vocab_echo.m4a    + vocab_echo.lrc
 ```
 
 ## Requirements
@@ -42,38 +63,124 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-### Audio Mode
-
 ```bash
+# Audio mode — positional arguments
 python main.py lesson01.mp3 lesson01.lrc
-```
 
-### Text-Only Mode
-
-```bash
+# Text-only mode
 python main.py --text phrases.txt
-```
 
-### Config-Only (no CLI args needed)
+# Batch mode — scan a whole folder
+python main.py --scan /path/to/lessons
 
-Set all paths in `config.yaml` and just run:
-
-```bash
+# Config-only — all paths set in config.yaml
 python main.py
 ```
 
-## Configuration (config.yaml)
+---
 
-All settings can be specified in `config.yaml`. CLI arguments always take priority over config values.
+## CLI Reference
+
+### Synopsis
+
+```
+python main.py [audio] [lrc]           # audio mode (positional)
+python main.py --text FILE             # text-only mode
+python main.py --scan DIR              # batch mode
+python main.py                         # config-only (paths from config.yaml)
+```
+
+### Input Arguments
+
+| Flag / Positional | Description |
+|---|---|
+| `audio` | *(positional, optional)* Source audio file (mp3, wav, m4a, etc.) — audio mode |
+| `lrc` | *(positional, optional)* LRC subtitle file with bilingual content — audio mode |
+| `--text, -t FILE` | Bilingual text file — text-only mode |
+| `--scan, -s DIR` | Folder to scan — batch mode |
+
+### Mode Control
+
+| Flag | Description |
+|---|---|
+| `--mode {audio,text}` | Force mode. Overrides config `mode:` and auto-detection. In batch mode, acts as a **filter**: `audio` = only audio+LRC pairs, `text` = only .txt files, omitted = both |
+
+### Output Paths
+
+| Flag | Description |
+|---|---|
+| `-o, --output PATH` | Output audio file path *(single-file mode only; ignored in batch)* |
+| `--output-lrc PATH` | Output LRC file path *(single-file mode only; ignored in batch)* |
+
+In single-file modes, if omitted, defaults to `<input_stem>_echo.<format>` in the same directory as the input. In batch mode, output is always `<stem>_echo.<format>` next to the source file.
+
+### Config
+
+| Flag | Default | Description |
+|---|---|---|
+| `-c, --config FILE` | `config.yaml` | Config file path |
+
+### Timing Overrides
+
+| Flag | Default | Description |
+|---|---|---|
+| `--after-first-target` | `0.8` | Silence after 1st target phrase (seconds) |
+| `--after-native` | `0.5` | Silence after native phrase (seconds) |
+| `--after-second-target` | `1.2` | Silence after 2nd target phrase / loop gap (seconds) |
+
+### TTS Overrides
+
+| Flag | Default | Description |
+|---|---|---|
+| `--target-voice` | `ja-JP-NanamiNeural` | Target language TTS voice (text-only mode) |
+| `--native-voice` | `zh-CN-XiaoxiaoNeural` | Native language TTS voice |
+| `--voice` | — | Alias for `--native-voice` (backward compatible) |
+| `--rate` | `+0%` | TTS speech rate (e.g., `+10%`, `-20%`) |
+
+### LRC / Text Parsing Overrides
+
+| Flag | Default | Description |
+|---|---|---|
+| `--delimiter` | `-` | Delimiter between target and native text |
+| `--split-strategy` | `last` | `first` or `last` delimiter occurrence |
+
+---
+
+## Mode Resolution
+
+Settings are resolved in this order (first wins):
+
+1. **CLI arguments** — always highest priority
+2. **config.yaml** — used when CLI args are not provided
+3. **Built-in defaults** — fallback
+
+Mode detection follows this priority chain:
+
+1. **`--scan` path set** → batch mode (overrides everything)
+2. **`--mode` CLI flag** or **`mode:` in config.yaml** → forced audio or text
+3. **Auto-detect from paths** — audio+lrc present → audio; text present → text; both → audio wins
+
+In batch mode, the `--mode` flag (or config `mode:`) acts as a **scan filter**, not the top-level mode:
+
+| `--mode` | Scanner behavior |
+|---|---|
+| *(omitted)* | Finds audio+LRC pairs **and** .txt files |
+| `audio` | Only audio+LRC pairs |
+| `text` | Only .txt files |
+
+---
+
+## Configuration (config.yaml)
 
 ```yaml
 # Mode: "audio" or "text" (optional)
 # If omitted, auto-detected from paths.
-# If both audio+lrc and text paths exist, defaults to audio.
+# In batch mode, acts as a scan filter.
 # mode: "audio"
 
 # File paths (CLI arguments override these)
 paths:
+  scan: ""               # folder path — triggers batch mode
   audio: ""              # source audio file — audio mode
   lrc: ""                # LRC subtitle file — audio mode
   text: ""               # bilingual text file — text-only mode
@@ -81,13 +188,13 @@ paths:
   output_lrc: ""         # output LRC file (default: same as output with .lrc)
 
 timing:
-  after_first_target: 0.8    # silence after 1st target (seconds)
-  after_native: 0.5          # silence after native TTS (seconds)
-  after_second_target: 1.2   # silence after 2nd target (seconds)
+  after_first_target: 0.8
+  after_native: 0.5
+  after_second_target: 1.2
 
 tts:
-  target_voice: "ja-JP-NanamiNeural"    # target language voice (text-only mode)
-  native_voice: "zh-CN-XiaoxiaoNeural"  # native language voice
+  target_voice: "ja-JP-NanamiNeural"
+  native_voice: "zh-CN-XiaoxiaoNeural"
   rate: "+0%"
   pitch: "+0Hz"
 
@@ -101,48 +208,13 @@ lrc:
   split_strategy: "last"
 ```
 
-### Config Examples
+---
 
-Audio mode via config only:
+## Input File Formats
 
-```yaml
-mode: "audio"
-paths:
-  audio: "lessons/lesson01.mp3"
-  lrc: "lessons/lesson01.lrc"
-  output: "output/lesson01_echo.m4a"
-  output_lrc: "output/lesson01_echo.lrc"
-```
+### Text File Format
 
-Text-only mode via config only:
-
-```yaml
-mode: "text"
-paths:
-  text: "data/phrases.txt"
-  output: "output/phrases_echo.m4a"
-tts:
-  target_voice: "en-US-JennyNeural"
-  native_voice: "zh-CN-XiaoxiaoNeural"
-```
-
-### Priority Rules
-
-Settings are resolved in this order (first wins):
-
-1. **CLI arguments** — always highest priority
-2. **config.yaml** — used when CLI args are not provided
-3. **Built-in defaults** — fallback
-
-Mode detection follows the same priority:
-
-1. `--mode` CLI flag
-2. `mode:` in config.yaml
-3. Auto-detect from paths — if both `audio`+`lrc` and `text` are set, audio mode wins
-
-## Text File Format
-
-One bilingual entry per line. Target text and native text are separated by a delimiter (default `-`). Blank lines and lines starting with `#` are ignored.
+One bilingual entry per line. Target text and native text separated by the delimiter (default `-`). Blank lines and `#` comments are ignored.
 
 ```
 # Japanese → Chinese
@@ -151,17 +223,13 @@ One bilingual entry per line. Target text and native text are separated by a del
 
 # English → Chinese
 The vaccine requires only one dose-该疫苗只需接种一次
-The committee approved the proposal-委员会批准了该提案
-
-# Japanese → English
-一度の接種でハシカのMMRワクチンについて-About the MMR vaccine that prevents measles with one dose
 ```
 
 Format: `<target_text><delimiter><native_text>`
 
-The split strategy defaults to `last`, meaning the text is split on the **last** occurrence of the delimiter. This avoids issues when the delimiter character appears within the text itself.
+The default split strategy `last` splits on the **last** occurrence of the delimiter, avoiding issues when the delimiter appears within the text itself.
 
-## LRC File Format
+### LRC File Format
 
 Standard LRC with bilingual content separated by the same delimiter:
 
@@ -170,75 +238,60 @@ Standard LRC with bilingual content separated by the same delimiter:
 [00:06.74]厚生労働省の専門家部会は...了承しました-厚生劳动省的专家委员会已批准...
 ```
 
-Format: `[timestamp]<target_text><delimiter><native_text>`
+Format: `[mm:ss.xx]<target_text><delimiter><native_text>`
 
-## CLI Reference
+### Batch Folder Structure
 
-### Positional Arguments (Audio Mode)
+The scanner recognizes audio files by extension (mp3, m4a, wav, flac, ogg, aac, wma) and pairs them with a `.lrc` file of the same stem. Text files are any `.txt` not already claimed by an audio pair.
 
-| Argument | Description |
-|----------|-------------|
-| `audio` | Source audio file (mp3, wav, m4a, etc.) |
-| `lrc` | LRC subtitle file with bilingual content |
+```
+lessons/
+  lesson01.mp3    ← paired with lesson01.lrc → audio mode
+  lesson01.lrc
+  lesson02.wav    ← paired with lesson02.lrc → audio mode
+  lesson02.lrc
+  vocab.txt       ← standalone → text-only mode
+  notes.mp3       ← no notes.lrc → skipped with warning
+```
 
-### Options
-
-| Flag | Description |
-|------|-------------|
-| `--text, -t FILE` | Text file for text-only mode |
-| `--mode` | Force mode: `audio` or `text` (overrides config + auto-detection) |
-| `-o, --output PATH` | Output audio file path |
-| `--output-lrc PATH` | Output LRC file path |
-| `-c, --config FILE` | Config file path (default: `config.yaml`) |
-
-### Timing Overrides
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--after-first-target` | 0.8 | Silence after first target phrase (seconds) |
-| `--after-native` | 0.5 | Silence after native phrase (seconds) |
-| `--after-second-target` | 1.2 | Silence after second target phrase (seconds) |
-
-### TTS Overrides
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--target-voice` | ja-JP-NanamiNeural | Target language TTS voice (text-only mode) |
-| `--native-voice` | zh-CN-XiaoxiaoNeural | Native language TTS voice |
-| `--voice` | — | Alias for `--native-voice` (backward compatible) |
-| `--rate` | +0% | TTS speech rate (e.g., `+10%`, `-20%`) |
-
-### LRC / Text Parsing Overrides
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--delimiter` | `-` | Delimiter between target and native text |
-| `--split-strategy` | last | `first` or `last` delimiter occurrence |
+---
 
 ## Examples
 
+### Audio Mode
+
 ```bash
-# Audio mode — basic
+# Basic
 python main.py lesson01.mp3 lesson01.lrc
 
-# Audio mode — custom output paths
-python main.py lesson01.mp3 lesson01.lrc -o out/echo.m4a --output-lrc out/echo.lrc
+# Custom output paths
+python main.py lesson01.mp3 lesson01.lrc \
+    -o out/echo.m4a \
+    --output-lrc out/echo.lrc
 
-# Audio mode — custom timing
+# Custom timing
 python main.py lesson01.mp3 lesson01.lrc \
     --after-first-target 1.0 \
     --after-native 0.6 \
     --after-second-target 1.5
 
-# Text-only mode — basic
+# Override native voice
+python main.py lesson01.mp3 lesson01.lrc \
+    --native-voice zh-CN-YunxiNeural
+```
+
+### Text-Only Mode
+
+```bash
+# Basic
 python main.py --text phrases.txt
 
-# Text-only mode — custom voices
+# Custom voices (English → Chinese)
 python main.py --text phrases.txt \
     --target-voice en-US-JennyNeural \
     --native-voice zh-CN-XiaoxiaoNeural
 
-# Text-only mode — Japanese target, English native
+# Japanese target, English native
 python main.py --text phrases.txt \
     --target-voice ja-JP-NanamiNeural \
     --native-voice en-US-GuyNeural
@@ -246,60 +299,88 @@ python main.py --text phrases.txt \
 # Slower TTS
 python main.py --text phrases.txt --rate "-10%"
 
-# Config-only — all paths set in config.yaml
+# Custom output path
+python main.py --text phrases.txt -o output/phrases_echo.m4a
+```
+
+### Batch Mode
+
+```bash
+# Scan a folder — process all audio+LRC pairs and text files
+python main.py --scan /path/to/lessons
+
+# Scan but only process audio+LRC pairs
+python main.py --scan /path/to/lessons --mode audio
+
+# Scan but only process text files
+python main.py --scan /path/to/lessons --mode text
+
+# Batch with custom voices and timing
+python main.py --scan /path/to/lessons \
+    --native-voice zh-CN-YunxiNeural \
+    --target-voice en-US-JennyNeural \
+    --after-second-target 1.5
+```
+
+### Config-Only
+
+```bash
+# All paths set in config.yaml
 python main.py
 
-# Config-only with a custom config file
+# Custom config file
 python main.py -c my_lesson.yaml
 
-# CLI overrides config — use config paths but override voice
+# Config paths + CLI voice override
 python main.py --native-voice zh-CN-YunxiNeural
 ```
 
+---
+
 ## Available Voices (edge-tts)
 
-Any edge-tts voice can be used for either target or native. Here are some common ones:
+Any edge-tts voice can be used for either target or native. Common ones:
 
 ### Chinese
 
 | Voice | Gender | Description |
-|-------|--------|-------------|
-| zh-CN-XiaoxiaoNeural | Female | Standard, warm |
-| zh-CN-YunxiNeural | Male | Standard, calm |
-| zh-CN-XiaoyiNeural | Female | Lively |
-| zh-CN-YunjianNeural | Male | Authoritative |
+|---|---|---|
+| `zh-CN-XiaoxiaoNeural` | Female | Standard, warm |
+| `zh-CN-YunxiNeural` | Male | Standard, calm |
+| `zh-CN-XiaoyiNeural` | Female | Lively |
+| `zh-CN-YunjianNeural` | Male | Authoritative |
 
 ### Japanese
 
 | Voice | Gender | Description |
-|-------|--------|-------------|
-| ja-JP-NanamiNeural | Female | Standard, clear |
-| ja-JP-KeitaNeural | Male | Standard, calm |
+|---|---|---|
+| `ja-JP-NanamiNeural` | Female | Standard, clear |
+| `ja-JP-KeitaNeural` | Male | Standard, calm |
 
 ### English
 
 | Voice | Gender | Accent |
-|-------|--------|--------|
-| en-US-JennyNeural | Female | American |
-| en-US-GuyNeural | Male | American |
-| en-US-AriaNeural | Female | American |
-| en-GB-SoniaNeural | Female | British |
-| en-GB-RyanNeural | Male | British |
-| en-AU-NatashaNeural | Female | Australian |
+|---|---|---|
+| `en-US-JennyNeural` | Female | American |
+| `en-US-GuyNeural` | Male | American |
+| `en-US-AriaNeural` | Female | American |
+| `en-GB-SoniaNeural` | Female | British |
+| `en-GB-RyanNeural` | Male | British |
+| `en-AU-NatashaNeural` | Female | Australian |
 
 ### Korean
 
 | Voice | Gender | Description |
-|-------|--------|-------------|
-| ko-KR-SunHiNeural | Female | Standard |
-| ko-KR-InJoonNeural | Male | Standard |
+|---|---|---|
+| `ko-KR-SunHiNeural` | Female | Standard |
+| `ko-KR-InJoonNeural` | Male | Standard |
 
 ### French
 
 | Voice | Gender | Description |
-|-------|--------|-------------|
-| fr-FR-DeniseNeural | Female | Standard |
-| fr-FR-HenriNeural | Male | Standard |
+|---|---|---|
+| `fr-FR-DeniseNeural` | Female | Standard |
+| `fr-FR-HenriNeural` | Male | Standard |
 
 Browse all available voices:
 
@@ -308,12 +389,14 @@ edge-tts --list-voices
 edge-tts --list-voices | grep en-    # filter by language
 ```
 
+---
+
 ## Project Structure
 
 ```
 echo-loop-generator/
-├── config.yaml              # Default configuration (paths, timing, TTS, output)
-├── main.py                  # CLI entry point (audio + text modes)
+├── config.yaml              # Default configuration
+├── main.py                  # CLI entry point (audio + text + batch modes)
 ├── requirements.txt
 ├── README.md
 ├── parser/
@@ -325,6 +408,9 @@ echo-loop-generator/
 │   ├── splitter.py          # Audio segment extraction
 │   ├── tts_generator.py     # TTS generation (target + native)
 │   └── assembler.py         # Echo Loop assembly (T-S-N-S-T-S)
+├── scanner/
+│   ├── __init__.py
+│   └── scanner.py           # Folder scanner for batch mode
 └── export/
     ├── __init__.py
     ├── exporter.py           # Final audio export

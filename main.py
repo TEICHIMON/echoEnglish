@@ -20,6 +20,7 @@ import shutil
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 
 from parser.lrc_parser import parse_lrc
 from parser.text_parser import parse_text
@@ -49,10 +50,19 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "after_second_target": 1.2,
         },
         "tts": {
+            "engine": "edge",
             "target_voice": "ja-JP-NanamiNeural",
             "native_voice": "zh-CN-XiaoxiaoNeural",
             "rate": "+0%",
             "pitch": "+0Hz",
+            "openai": {
+                "model": "gpt-4o-mini-tts",
+                "voice": "coral",
+                "speed": 1.0,
+                "instructions": "",
+            },
+            "gain": 0,
+            "normalize": None,
         },
         "output": {
             "format": "m4a",
@@ -72,10 +82,20 @@ def load_config(config_path: str | Path | None = None) -> dict:
             # Top-level mode
             if "mode" in user_config:
                 defaults["mode"] = user_config["mode"] or ""
-            # Deep merge dict sections
-            for section in ("paths", "timing", "tts", "output", "lrc"):
+            # Deep merge dict sections (except tts.openai which is nested)
+            for section in ("paths", "timing", "output", "lrc"):
                 if section in user_config and isinstance(user_config[section], dict):
                     defaults[section].update(user_config[section])
+            # TTS section — merge top-level keys, then openai sub-dict
+            if "tts" in user_config and isinstance(user_config["tts"], dict):
+                tts_user = user_config["tts"]
+                # Merge openai sub-dict separately
+                if "openai" in tts_user and isinstance(tts_user["openai"], dict):
+                    defaults["tts"]["openai"].update(tts_user["openai"])
+                # Merge remaining tts keys (skip openai to avoid overwriting)
+                for k, v in tts_user.items():
+                    if k != "openai":
+                        defaults["tts"][k] = v
 
     # Backward compatibility: old "voice" key → native_voice
     tts = defaults["tts"]
@@ -83,6 +103,25 @@ def load_config(config_path: str | Path | None = None) -> dict:
         tts["native_voice"] = tts.pop("voice")
     elif "voice" in tts:
         tts.pop("voice")
+
+    # Ensure engine is valid
+    if tts.get("engine") not in ("edge", "openai"):
+        tts["engine"] = "edge"
+
+    # Ensure gain is numeric
+    if tts.get("gain") is None:
+        tts["gain"] = 0
+    tts["gain"] = float(tts["gain"])
+
+    # Ensure normalize is float or None
+    norm = tts.get("normalize")
+    if norm is not None and norm != "":
+        tts["normalize"] = float(norm)
+    else:
+        tts["normalize"] = None
+
+    # Ensure openai.speed is float
+    tts["openai"]["speed"] = float(tts["openai"].get("speed", 1.0))
 
     return defaults
 
@@ -174,12 +213,16 @@ Modes:
     # --- TTS overrides ---
     tts_group = parser.add_argument_group("TTS (overrides config)")
     tts_group.add_argument(
+        "--engine", choices=["edge", "openai"], default=None,
+        help="TTS engine: 'edge' (free) or 'openai' (paid, reads math)",
+    )
+    tts_group.add_argument(
         "--target-voice", default=None,
-        help="Target language TTS voice (text-only mode)",
+        help="Target language TTS voice (text-only mode, edge-tts)",
     )
     tts_group.add_argument(
         "--native-voice", default=None,
-        help="Native language TTS voice",
+        help="Native language TTS voice (edge-tts)",
     )
     tts_group.add_argument(
         "--voice", default=None,
@@ -187,7 +230,23 @@ Modes:
     )
     tts_group.add_argument(
         "--rate", default=None,
-        help="TTS speech rate (e.g., +10%%, -20%%)",
+        help="TTS speech rate (e.g., +10%%, -20%%) — edge-tts only",
+    )
+    tts_group.add_argument(
+        "--gain", type=float, default=None,
+        help="TTS volume gain in dB (e.g., -6 to reduce, +3 to boost)",
+    )
+    tts_group.add_argument(
+        "--normalize", type=float, default=None,
+        help="Normalize TTS volume to target dBFS (e.g., -20). Overrides --gain",
+    )
+    tts_group.add_argument(
+        "--openai-voice", default=None,
+        help="OpenAI TTS voice (e.g., coral, nova, sage)",
+    )
+    tts_group.add_argument(
+        "--openai-instructions", default=None,
+        help="OpenAI TTS instructions prompt",
     )
 
     # --- LRC overrides ---
@@ -233,6 +292,8 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["timing"]["after_second_target"] = args.after_second_target
 
     # TTS
+    if args.engine:
+        config["tts"]["engine"] = args.engine
     if args.target_voice:
         config["tts"]["target_voice"] = args.target_voice
     if args.native_voice:
@@ -241,6 +302,16 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["tts"]["native_voice"] = args.voice
     if args.rate:
         config["tts"]["rate"] = args.rate
+    if args.gain is not None:
+        config["tts"]["gain"] = args.gain
+    if args.normalize is not None:
+        config["tts"]["normalize"] = args.normalize
+
+    # OpenAI TTS overrides
+    if args.openai_voice:
+        config["tts"]["openai"]["voice"] = args.openai_voice
+    if args.openai_instructions:
+        config["tts"]["openai"]["instructions"] = args.openai_instructions
 
     # LRC
     if args.delimiter:
@@ -272,7 +343,6 @@ def resolve_mode(config: dict) -> str:
     has_text = bool(paths.get("text"))
 
     if mode in ("audio", "text"):
-        # Explicit mode — validate required paths exist
         if mode == "audio" and not has_audio:
             print("Error: audio mode requires 'audio' and 'lrc' paths", file=sys.stderr)
             sys.exit(1)
@@ -299,7 +369,6 @@ def resolve_output_paths(config: dict, mode: str) -> tuple[Path, Path]:
     paths = config["paths"]
     ext = config["output"]["format"]
 
-    # Output audio path
     if paths.get("output"):
         audio_out = Path(paths["output"])
     elif mode == "text" and paths.get("text"):
@@ -311,7 +380,6 @@ def resolve_output_paths(config: dict, mode: str) -> tuple[Path, Path]:
     else:
         audio_out = Path(f"output_echo.{ext}")
 
-    # Output LRC path
     if paths.get("output_lrc"):
         lrc_out = Path(paths["output_lrc"])
     else:
@@ -323,19 +391,33 @@ def resolve_output_paths(config: dict, mode: str) -> tuple[Path, Path]:
 def resolve_output_paths_for_item(item: ScanItem, config: dict) -> tuple[Path, Path]:
     """Determine output paths for a single batch item (same folder, _echo suffix)."""
     ext = config["output"]["format"]
-
-    if item.mode == "audio":
-        source = item.audio_path
-    else:
-        source = item.text_path
-
+    source = item.audio_path if item.mode == "audio" else item.text_path
     stem = source.stem
     parent = source.parent
-
     audio_out = parent / f"{stem}_echo.{ext}"
     lrc_out = audio_out.with_suffix(".lrc")
-
     return audio_out, lrc_out
+
+
+def _volume_label(config: dict) -> str:
+    """Build a display label for the current volume settings."""
+    norm = config["tts"]["normalize"]
+    gain = config["tts"]["gain"]
+    if norm is not None:
+        return f"normalize to {norm} dBFS"
+    elif gain != 0:
+        sign = "+" if gain > 0 else ""
+        return f"{sign}{gain} dB"
+    return "default"
+
+
+def _engine_label(config: dict) -> str:
+    """Build a display label for the current TTS engine."""
+    engine = config["tts"]["engine"]
+    if engine == "openai":
+        oai = config["tts"]["openai"]
+        return f"openai ({oai['model']}, voice={oai['voice']})"
+    return "edge-tts"
 
 
 def progress_bar(current: int, total: int) -> None:
@@ -354,6 +436,22 @@ def _print_segment_summary(segments: list) -> None:
         print(f"    N: {seg.native_text[:40]}...")
     if len(segments) > 3:
         print(f"    ... and {len(segments) - 3} more")
+
+
+def _tts_volume_kwargs(config: dict) -> dict:
+    """Extract volume keyword arguments from config for TTS functions."""
+    return {
+        "gain_db": config["tts"]["gain"],
+        "normalize_target_dbfs": config["tts"]["normalize"],
+    }
+
+
+def _tts_engine_kwargs(config: dict) -> dict:
+    """Extract engine keyword arguments from config for TTS functions."""
+    return {
+        "engine": config["tts"]["engine"],
+        "openai_config": config["tts"]["openai"],
+    }
 
 
 def _assemble_and_export(
@@ -397,6 +495,9 @@ def run_audio_mode(config: dict) -> None:
         after_second_target=config["timing"]["after_second_target"],
     )
 
+    vol_kwargs = _tts_volume_kwargs(config)
+    eng_kwargs = _tts_engine_kwargs(config)
+
     # Banner
     print("=" * 60)
     print("  Echo Loop Generator — Audio Mode")
@@ -408,7 +509,10 @@ def run_audio_mode(config: dict) -> None:
     print(f"  Output LRC: {lrc_output_path}")
     print(f"  Timing:     {timing.after_first_target}s / "
           f"{timing.after_native}s / {timing.after_second_target}s")
-    print(f"  Native TTS: {config['tts']['native_voice']}")
+    print(f"  TTS Engine: {_engine_label(config)}")
+    if config["tts"]["engine"] == "edge":
+        print(f"  Native TTS: {config['tts']['native_voice']}")
+    print(f"  TTS Volume: {_volume_label(config)}")
     print("=" * 60)
 
     # Step 1: Load source audio
@@ -442,6 +546,8 @@ def run_audio_mode(config: dict) -> None:
         rate=config["tts"]["rate"],
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
+        **vol_kwargs,
+        **eng_kwargs,
     )
     print(f"  Generated {len(native_audios)} TTS audio clips")
 
@@ -464,6 +570,9 @@ def run_text_mode(config: dict) -> None:
         after_second_target=config["timing"]["after_second_target"],
     )
 
+    vol_kwargs = _tts_volume_kwargs(config)
+    eng_kwargs = _tts_engine_kwargs(config)
+
     # Banner
     print("=" * 60)
     print("  Echo Loop Generator — Text-Only Mode")
@@ -474,8 +583,11 @@ def run_text_mode(config: dict) -> None:
     print(f"  Output LRC: {lrc_output_path}")
     print(f"  Timing:     {timing.after_first_target}s / "
           f"{timing.after_native}s / {timing.after_second_target}s")
-    print(f"  Target TTS: {config['tts']['target_voice']}")
-    print(f"  Native TTS: {config['tts']['native_voice']}")
+    print(f"  TTS Engine: {_engine_label(config)}")
+    if config["tts"]["engine"] == "edge":
+        print(f"  Target TTS: {config['tts']['target_voice']}")
+        print(f"  Native TTS: {config['tts']['native_voice']}")
+    print(f"  TTS Volume: {_volume_label(config)}")
     print("=" * 60)
 
     # Step 1: Parse text file
@@ -497,6 +609,8 @@ def run_text_mode(config: dict) -> None:
         rate=config["tts"]["rate"],
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
+        **vol_kwargs,
+        **eng_kwargs,
     )
     print(f"  Generated {len(target_audios)} target TTS clips")
 
@@ -508,6 +622,8 @@ def run_text_mode(config: dict) -> None:
         rate=config["tts"]["rate"],
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
+        **vol_kwargs,
+        **eng_kwargs,
     )
     print(f"  Generated {len(native_audios)} native TTS clips")
 
@@ -524,8 +640,6 @@ def run_batch_mode(config: dict) -> None:
     scan_path = Path(config["paths"]["scan"])
     mode_filter = config.get("mode", "").strip().lower()
 
-    # In batch mode, the mode field filters what to scan for
-    # (not the top-level mode which is "batch")
     if mode_filter not in ("audio", "text"):
         mode_filter = ""
 
@@ -547,9 +661,12 @@ def run_batch_mode(config: dict) -> None:
         print(f"  Filter:      auto (audio pairs + text files)")
     print(f"  Timing:      {timing.after_first_target}s / "
           f"{timing.after_native}s / {timing.after_second_target}s")
-    print(f"  Native TTS:  {config['tts']['native_voice']}")
-    if mode_filter in ("", "text"):
-        print(f"  Target TTS:  {config['tts']['target_voice']}")
+    print(f"  TTS Engine:  {_engine_label(config)}")
+    if config["tts"]["engine"] == "edge":
+        print(f"  Native TTS:  {config['tts']['native_voice']}")
+        if mode_filter in ("", "text"):
+            print(f"  Target TTS:  {config['tts']['target_voice']}")
+    print(f"  TTS Volume:  {_volume_label(config)}")
     print("=" * 60)
 
     # Scan
@@ -573,7 +690,6 @@ def run_batch_mode(config: dict) -> None:
         print(f"{'─' * 60}")
 
         try:
-            # Build a per-item config by overriding paths
             item_config = _config_for_item(config, item)
             output_path, lrc_output_path = resolve_output_paths_for_item(item, config)
 
@@ -596,7 +712,6 @@ def run_batch_mode(config: dict) -> None:
     if failed:
         print(f"  ✗ Failed:    {len(failed)}")
         for name, error in failed:
-            # Truncate long error messages
             short_err = error if len(error) <= 80 else error[:77] + "..."
             print(f"    - {name}: {short_err}")
     print(f"{'=' * 60}")
@@ -606,7 +721,7 @@ def _config_for_item(config: dict, item: ScanItem) -> dict:
     """Create a config copy with paths set for a specific batch item."""
     import copy
     c = copy.deepcopy(config)
-    c["paths"]["scan"] = ""  # clear scan to avoid recursion confusion
+    c["paths"]["scan"] = ""
 
     if item.mode == "audio":
         c["paths"]["audio"] = str(item.audio_path)
@@ -617,7 +732,6 @@ def _config_for_item(config: dict, item: ScanItem) -> dict:
         c["paths"]["audio"] = ""
         c["paths"]["lrc"] = ""
 
-    # Clear single-file output overrides — batch uses _echo suffix
     c["paths"]["output"] = ""
     c["paths"]["output_lrc"] = ""
 
@@ -635,16 +749,17 @@ def _run_single_audio(
     audio_path = item.audio_path
     lrc_path = item.lrc_path
 
+    vol_kwargs = _tts_volume_kwargs(config)
+    eng_kwargs = _tts_engine_kwargs(config)
+
     print(f"  Audio: {audio_path.name}")
     print(f"  LRC:   {lrc_path.name}")
     print(f"  →      {output_path.name}")
 
-    # Load source audio
     source_audio = load_audio(audio_path)
     audio_duration_ms = len(source_audio)
     print(f"  Loaded: {audio_duration_ms / 1000:.1f}s")
 
-    # Parse LRC
     segments = parse_lrc(
         lrc_path,
         delimiter=config["lrc"]["delimiter"],
@@ -653,10 +768,8 @@ def _run_single_audio(
     )
     print(f"  Segments: {len(segments)}")
 
-    # Extract target audio
     target_audios = extract_all_segments(source_audio, segments)
 
-    # Generate native TTS
     work_dir = Path(tempfile.mkdtemp(prefix="echo_batch_"))
     native_audios = generate_native_audio(
         segments,
@@ -664,9 +777,10 @@ def _run_single_audio(
         rate=config["tts"]["rate"],
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
+        **vol_kwargs,
+        **eng_kwargs,
     )
 
-    # Assemble and export
     _assemble_and_export(
         segments, target_audios, native_audios,
         timing, config, output_path, lrc_output_path, work_dir,
@@ -683,10 +797,12 @@ def _run_single_text(
     """Process a single text file in batch mode."""
     text_path = item.text_path
 
+    vol_kwargs = _tts_volume_kwargs(config)
+    eng_kwargs = _tts_engine_kwargs(config)
+
     print(f"  Text: {text_path.name}")
     print(f"  →     {output_path.name}")
 
-    # Parse text
     segments = parse_text(
         text_path,
         delimiter=config["lrc"]["delimiter"],
@@ -696,25 +812,26 @@ def _run_single_text(
 
     work_dir = Path(tempfile.mkdtemp(prefix="echo_batch_"))
 
-    # Generate target TTS
     target_audios = generate_target_audio(
         segments,
         voice=config["tts"]["target_voice"],
         rate=config["tts"]["rate"],
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
+        **vol_kwargs,
+        **eng_kwargs,
     )
 
-    # Generate native TTS
     native_audios = generate_native_audio(
         segments,
         voice=config["tts"]["native_voice"],
         rate=config["tts"]["rate"],
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
+        **vol_kwargs,
+        **eng_kwargs,
     )
 
-    # Assemble and export
     _assemble_and_export(
         segments, target_audios, native_audios,
         timing, config, output_path, lrc_output_path, work_dir,
@@ -722,6 +839,8 @@ def _run_single_text(
 
 
 def main():
+    load_dotenv()  # load .env file (OPENAI_API_KEY, etc.)
+
     args = parse_args()
     config = load_config(args.config)
     config = apply_cli_overrides(config, args)
