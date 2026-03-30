@@ -14,6 +14,63 @@ The Echo Loop follows the **T-S-N-S-T-S** pattern:
 
 This structure uses the reflex energy of your native language to ignite comprehension of the target language — not through translation, but through resonance.
 
+## Two TTS Engines
+
+The generator supports two TTS engines, selectable per run via config or CLI:
+
+| Engine | Cost | Strengths | Flag |
+|---|---|---|---|
+| **edge-tts** | Free | Fast, many voices/languages, concurrent generation | `--engine edge` |
+| **OpenAI gpt-4o-mini-tts** | Paid | Reads math formulas naturally, semantic understanding, instruction-tunable | `--engine openai` |
+
+**edge-tts** is the default. Switch to OpenAI when your content includes mathematical expressions, technical notation, or anything that benefits from LLM-level reading comprehension.
+
+### OpenAI Engine Setup
+
+1. Install the SDK (already in `requirements.txt`):
+   ```bash
+   pip install openai
+   ```
+2. Set your API key:
+   ```bash
+   export OPENAI_API_KEY="sk-..."
+   ```
+   Or add it to a `.env` file in the project root — the generator loads it automatically via `python-dotenv`.
+
+3. Use it:
+   ```bash
+   # CLI
+   python main.py --text math_phrases.txt --engine openai
+
+   # Or set in config.yaml
+   # tts:
+   #   engine: "openai"
+   ```
+
+### OpenAI Voice & Instructions
+
+The OpenAI engine exposes two powerful controls:
+
+- **voice** — choose from: `alloy`, `ash`, `ballad`, `cedar`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`
+- **instructions** — a natural language prompt that controls *how* the model speaks. This is where math reading happens:
+
+```yaml
+tts:
+  engine: "openai"
+  openai:
+    voice: "coral"
+    speed: 1.0
+    instructions: "用中文自然地朗读，数学表达式要读成口语形式，比如2ⁿ读作2的n次方"
+```
+
+```bash
+# CLI overrides
+python main.py --text formulas.txt \
+    --engine openai \
+    --openai-voice nova \
+    --openai-instructions "Read mathematical expressions naturally in English"
+```
+
 ## Three Modes
 
 ### Audio Mode
@@ -53,7 +110,7 @@ lessons/
 
 - Python 3.10+
 - ffmpeg (for m4a export)
-- Internet connection (for edge-tts)
+- Internet connection (for edge-tts or OpenAI API)
 
 ## Installation
 
@@ -69,6 +126,9 @@ python main.py lesson01.mp3 lesson01.lrc
 
 # Text-only mode
 python main.py --text phrases.txt
+
+# Text-only mode with OpenAI TTS (for math content)
+python main.py --text math_formulas.txt --engine openai
 
 # Batch mode — scan a whole folder
 python main.py --scan /path/to/lessons
@@ -128,14 +188,24 @@ In single-file modes, if omitted, defaults to `<input_stem>_echo.<format>` in th
 | `--after-native` | `0.5` | Silence after native phrase (seconds) |
 | `--after-second-target` | `1.2` | Silence after 2nd target phrase / loop gap (seconds) |
 
-### TTS Overrides
+### TTS Engine & Voice Overrides
 
 | Flag | Default | Description |
 |---|---|---|
-| `--target-voice` | `ja-JP-NanamiNeural` | Target language TTS voice (text-only mode) |
-| `--native-voice` | `zh-CN-XiaoxiaoNeural` | Native language TTS voice |
+| `--engine {edge,openai}` | `edge` | TTS engine selection |
+| `--target-voice` | `ja-JP-NanamiNeural` | Target language voice (text-only mode, edge-tts) |
+| `--native-voice` | `zh-CN-XiaoxiaoNeural` | Native language voice (edge-tts) |
 | `--voice` | — | Alias for `--native-voice` (backward compatible) |
-| `--rate` | `+0%` | TTS speech rate (e.g., `+10%`, `-20%`) |
+| `--rate` | `+0%` | Speech rate (e.g., `+10%`, `-20%`) — edge-tts only |
+| `--openai-voice` | `coral` | OpenAI TTS voice — openai engine only |
+| `--openai-instructions` | — | OpenAI TTS instructions prompt — openai engine only |
+
+### TTS Volume Overrides
+
+| Flag | Default | Description |
+|---|---|---|
+| `--gain` | `0` | Fixed dB gain applied to every TTS clip (e.g., `-6` to reduce, `+3` to boost) |
+| `--normalize` | — | Normalize each TTS clip to this dBFS level (e.g., `-20`). Overrides `--gain` when set |
 
 ### LRC / Text Parsing Overrides
 
@@ -193,10 +263,26 @@ timing:
   after_second_target: 1.2
 
 tts:
+  # Engine: "edge" (free) or "openai" (paid, reads math naturally)
+  # Requires OPENAI_API_KEY env var when engine is "openai".
+  engine: "edge"
+
+  # --- edge-tts settings ---
   target_voice: "ja-JP-NanamiNeural"
   native_voice: "zh-CN-XiaoxiaoNeural"
   rate: "+0%"
   pitch: "+0Hz"
+
+  # --- OpenAI TTS settings (used when engine: "openai") ---
+  openai:
+    model: "gpt-4o-mini-tts"
+    voice: "coral"
+    speed: 1.0
+    instructions: "用中文自然地朗读，数学表达式要读成口语形式，比如2ⁿ读作2的n次方"
+
+  # --- Volume control (applies to both engines) ---
+  gain: -6              # fixed dB adjustment (0 = no change)
+  normalize:            # target dBFS (e.g., -20). Overrides gain when set.
 
 output:
   format: "m4a"
@@ -278,6 +364,9 @@ python main.py lesson01.mp3 lesson01.lrc \
 # Override native voice
 python main.py lesson01.mp3 lesson01.lrc \
     --native-voice zh-CN-YunxiNeural
+
+# Use OpenAI for native TTS (math-heavy content)
+python main.py lesson01.mp3 lesson01.lrc --engine openai
 ```
 
 ### Text-Only Mode
@@ -291,16 +380,20 @@ python main.py --text phrases.txt \
     --target-voice en-US-JennyNeural \
     --native-voice zh-CN-XiaoxiaoNeural
 
-# Japanese target, English native
-python main.py --text phrases.txt \
-    --target-voice ja-JP-NanamiNeural \
-    --native-voice en-US-GuyNeural
-
 # Slower TTS
 python main.py --text phrases.txt --rate "-10%"
 
-# Custom output path
-python main.py --text phrases.txt -o output/phrases_echo.m4a
+# OpenAI engine for math formulas
+python main.py --text math.txt \
+    --engine openai \
+    --openai-voice sage \
+    --openai-instructions "Read all math expressions naturally in spoken Chinese"
+
+# Reduce TTS volume by 6 dB
+python main.py --text phrases.txt --gain -6
+
+# Normalize all TTS clips to -20 dBFS
+python main.py --text phrases.txt --normalize -20
 ```
 
 ### Batch Mode
@@ -309,16 +402,15 @@ python main.py --text phrases.txt -o output/phrases_echo.m4a
 # Scan a folder — process all audio+LRC pairs and text files
 python main.py --scan /path/to/lessons
 
-# Scan but only process audio+LRC pairs
+# Only audio+LRC pairs
 python main.py --scan /path/to/lessons --mode audio
 
-# Scan but only process text files
+# Only text files
 python main.py --scan /path/to/lessons --mode text
 
-# Batch with custom voices and timing
+# Batch with OpenAI engine and custom timing
 python main.py --scan /path/to/lessons \
-    --native-voice zh-CN-YunxiNeural \
-    --target-voice en-US-JennyNeural \
+    --engine openai \
     --after-second-target 1.5
 ```
 
@@ -331,63 +423,58 @@ python main.py
 # Custom config file
 python main.py -c my_lesson.yaml
 
-# Config paths + CLI voice override
-python main.py --native-voice zh-CN-YunxiNeural
+# Config paths + CLI engine override
+python main.py --engine openai
 ```
 
 ---
 
-## Available Voices (edge-tts)
+## TTS Volume Control
 
-Any edge-tts voice can be used for either target or native. Common ones:
+Volume adjustment applies to every generated TTS clip, regardless of engine. Two modes are available:
 
-### Chinese
+**Fixed gain** — shift all clips by a constant dB amount:
+```bash
+python main.py --text phrases.txt --gain -6    # quieter
+python main.py --text phrases.txt --gain 3     # louder
+```
 
-| Voice | Gender | Description |
-|---|---|---|
-| `zh-CN-XiaoxiaoNeural` | Female | Standard, warm |
-| `zh-CN-YunxiNeural` | Male | Standard, calm |
-| `zh-CN-XiaoyiNeural` | Female | Lively |
-| `zh-CN-YunjianNeural` | Male | Authoritative |
+**Normalization** — scale each clip individually so its average loudness hits a target dBFS. Overrides `--gain` when both are set:
+```bash
+python main.py --text phrases.txt --normalize -20
+```
 
-### Japanese
+Typical spoken audio sits around -18 to -24 dBFS. Set in config as `tts.gain` and `tts.normalize`.
 
-| Voice | Gender | Description |
-|---|---|---|
-| `ja-JP-NanamiNeural` | Female | Standard, clear |
-| `ja-JP-KeitaNeural` | Male | Standard, calm |
+---
 
-### English
+## Available Voices
 
-| Voice | Gender | Accent |
-|---|---|---|
-| `en-US-JennyNeural` | Female | American |
-| `en-US-GuyNeural` | Male | American |
-| `en-US-AriaNeural` | Female | American |
-| `en-GB-SoniaNeural` | Female | British |
-| `en-GB-RyanNeural` | Male | British |
-| `en-AU-NatashaNeural` | Female | Australian |
+### edge-tts Voices
 
-### Korean
+Any edge-tts voice can be used. Common ones:
 
-| Voice | Gender | Description |
-|---|---|---|
-| `ko-KR-SunHiNeural` | Female | Standard |
-| `ko-KR-InJoonNeural` | Male | Standard |
+**Chinese:** `zh-CN-XiaoxiaoNeural` (F), `zh-CN-YunxiNeural` (M), `zh-CN-XiaoyiNeural` (F), `zh-CN-YunjianNeural` (M)
 
-### French
+**Japanese:** `ja-JP-NanamiNeural` (F), `ja-JP-KeitaNeural` (M)
 
-| Voice | Gender | Description |
-|---|---|---|
-| `fr-FR-DeniseNeural` | Female | Standard |
-| `fr-FR-HenriNeural` | Male | Standard |
+**English:** `en-US-JennyNeural` (F), `en-US-GuyNeural` (M), `en-US-AriaNeural` (F), `en-GB-SoniaNeural` (F), `en-GB-RyanNeural` (M)
 
-Browse all available voices:
+**Korean:** `ko-KR-SunHiNeural` (F), `ko-KR-InJoonNeural` (M)
 
+**French:** `fr-FR-DeniseNeural` (F), `fr-FR-HenriNeural` (M)
+
+Browse all:
 ```bash
 edge-tts --list-voices
-edge-tts --list-voices | grep en-    # filter by language
+edge-tts --list-voices | grep en-
 ```
+
+### OpenAI Voices
+
+`alloy`, `ash`, `ballad`, `cedar`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`
+
+The OpenAI engine uses a single voice for both target and native audio. Language is determined by the input text and `instructions` prompt — no separate voice-per-language selection is needed.
 
 ---
 
@@ -399,6 +486,7 @@ echo-loop-generator/
 ├── main.py                  # CLI entry point (audio + text + batch modes)
 ├── requirements.txt
 ├── README.md
+├── .env                     # OPENAI_API_KEY (git-ignored)
 ├── parser/
 │   ├── __init__.py
 │   ├── lrc_parser.py        # LRC file parser
@@ -406,7 +494,7 @@ echo-loop-generator/
 ├── audio/
 │   ├── __init__.py
 │   ├── splitter.py          # Audio segment extraction
-│   ├── tts_generator.py     # TTS generation (target + native)
+│   ├── tts_generator.py     # TTS generation (edge-tts + OpenAI, volume control)
 │   └── assembler.py         # Echo Loop assembly (T-S-N-S-T-S)
 ├── scanner/
 │   ├── __init__.py
