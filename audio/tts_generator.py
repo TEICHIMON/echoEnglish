@@ -1,12 +1,13 @@
 """
 TTS generator module.
 
-Generates audio from text using edge-tts.
-Supports both native language (Chinese) and target language TTS generation.
-Uses async batch generation for efficiency.
+Generates audio from text using edge-tts or OpenAI gpt-4o-mini-tts.
+Supports both native language and target language TTS generation.
+Engine is selected via config: "edge" (free) or "openai" (paid, supports math).
 """
 
 import asyncio
+import os
 import tempfile
 from pathlib import Path
 
@@ -16,88 +17,204 @@ from pydub import AudioSegment
 from parser.lrc_parser import Segment
 
 
-async def _generate_single_tts(
+# ---------------------------------------------------------------------------
+# Volume adjustment (shared by both engines)
+# ---------------------------------------------------------------------------
+
+def _adjust_volume(
+    audio: AudioSegment,
+    gain_db: float = 0.0,
+    normalize_target_dbfs: float | None = None,
+) -> AudioSegment:
+    """
+    Adjust the volume of an AudioSegment.
+
+    Two modes (normalize takes priority if both are set):
+      1. normalize_target_dbfs: normalize the clip so its average loudness
+         (dBFS) matches the target value.
+      2. gain_db: apply a fixed gain in dB.
+    """
+    if normalize_target_dbfs is not None:
+        current_dbfs = audio.dBFS
+        if current_dbfs > -60.0:
+            delta = normalize_target_dbfs - current_dbfs
+            audio = audio.apply_gain(delta)
+    elif gain_db != 0.0:
+        audio = audio.apply_gain(gain_db)
+    return audio
+
+
+# ---------------------------------------------------------------------------
+# Edge-TTS engine
+# ---------------------------------------------------------------------------
+
+async def _edge_generate_single(
     text: str,
     output_path: str,
     voice: str = "zh-CN-XiaoxiaoNeural",
     rate: str = "+0%",
     pitch: str = "+0Hz",
 ) -> None:
-    """Generate a single TTS audio file."""
+    """Generate a single TTS audio file via edge-tts."""
     communicate = edge_tts.Communicate(
-        text=text,
-        voice=voice,
-        rate=rate,
-        pitch=pitch,
+        text=text, voice=voice, rate=rate, pitch=pitch,
     )
     await communicate.save(output_path)
 
 
-async def _generate_batch_tts(
+async def _edge_generate_batch(
     texts: list[str],
     output_dir: Path,
-    voice: str = "zh-CN-XiaoxiaoNeural",
-    rate: str = "+0%",
-    pitch: str = "+0Hz",
-    prefix: str = "tts",
+    voice: str,
+    rate: str,
+    pitch: str,
+    prefix: str,
 ) -> list[Path]:
-    """
-    Generate TTS audio for multiple texts concurrently.
-
-    Returns list of output file paths in same order as input texts.
-    """
+    """Generate TTS audio for multiple texts via edge-tts concurrently."""
     output_paths = []
     tasks = []
 
     for i, text in enumerate(texts):
         out_path = output_dir / f"{prefix}_{i:04d}.mp3"
         output_paths.append(out_path)
-        tasks.append(_generate_single_tts(text, str(out_path), voice, rate, pitch))
+        tasks.append(
+            _edge_generate_single(text, str(out_path), voice, rate, pitch)
+        )
 
-    # Run with limited concurrency to avoid overwhelming the service
     semaphore = asyncio.Semaphore(5)
 
-    async def _limited_task(coro):
+    async def _limited(coro):
         async with semaphore:
             try:
                 return await coro
             except Exception as e:
-                print(f"  Warning: TTS generation failed: {e}")
+                print(f"  Warning: edge-tts generation failed: {e}")
                 return None
 
-    await asyncio.gather(*[_limited_task(t) for t in tasks])
+    await asyncio.gather(*[_limited(t) for t in tasks])
     return output_paths
 
 
-def _run_batch_tts(
+def _run_edge_batch(
     texts: list[str],
     work_dir: Path,
     voice: str,
     rate: str,
     pitch: str,
-    prefix: str = "tts",
+    prefix: str,
+    gain_db: float,
+    normalize_target_dbfs: float | None,
 ) -> list[AudioSegment]:
-    """
-    Run batch TTS and load results into AudioSegment objects.
-
-    Shared logic for both target and native TTS generation.
-    """
+    """Run edge-tts batch and load results into AudioSegments."""
     output_paths = asyncio.run(
-        _generate_batch_tts(texts, work_dir, voice, rate, pitch, prefix)
+        _edge_generate_batch(texts, work_dir, voice, rate, pitch, prefix)
     )
+    return _load_audio_files(output_paths, texts, gain_db, normalize_target_dbfs)
 
+
+# ---------------------------------------------------------------------------
+# OpenAI TTS engine
+# ---------------------------------------------------------------------------
+
+def _get_openai_client():
+    """Lazily import and create an OpenAI client."""
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError(
+            "openai package is required for engine='openai'. "
+            "Install it with: pip install openai"
+        )
+
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY environment variable is not set. "
+            "Set it before using engine='openai'."
+        )
+    return OpenAI(api_key=api_key)
+
+
+def _openai_generate_single(
+    client,
+    text: str,
+    output_path: Path,
+    model: str,
+    voice: str,
+    instructions: str,
+    speed: float,
+) -> None:
+    """Generate a single TTS audio file via OpenAI API."""
+    kwargs = {
+        "model": model,
+        "voice": voice,
+        "input": text,
+        "response_format": "mp3",
+    }
+    if instructions:
+        kwargs["instructions"] = instructions
+    if speed != 1.0:
+        kwargs["speed"] = speed
+
+    with client.audio.speech.with_streaming_response.create(**kwargs) as response:
+        response.stream_to_file(str(output_path))
+
+
+def _run_openai_batch(
+    texts: list[str],
+    work_dir: Path,
+    prefix: str,
+    openai_config: dict,
+    gain_db: float,
+    normalize_target_dbfs: float | None,
+) -> list[AudioSegment]:
+    """Generate TTS via OpenAI for a batch of texts (sequential to respect rate limits)."""
+    client = _get_openai_client()
+    model = openai_config.get("model", "gpt-4o-mini-tts")
+    voice = openai_config.get("voice", "coral")
+    instructions = openai_config.get("instructions", "")
+    speed = float(openai_config.get("speed", 1.0))
+
+    output_paths: list[Path] = []
+    for i, text in enumerate(texts):
+        out_path = work_dir / f"{prefix}_{i:04d}.mp3"
+        output_paths.append(out_path)
+        try:
+            _openai_generate_single(
+                client, text, out_path, model, voice, instructions, speed,
+            )
+        except Exception as e:
+            print(f"  Warning: OpenAI TTS failed for '{text[:30]}...': {e}")
+
+    return _load_audio_files(output_paths, texts, gain_db, normalize_target_dbfs)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _load_audio_files(
+    paths: list[Path],
+    texts: list[str],
+    gain_db: float,
+    normalize_target_dbfs: float | None,
+) -> list[AudioSegment]:
+    """Load generated mp3 files into AudioSegments with volume adjustment."""
     audios = []
-    for path in output_paths:
+    for i, path in enumerate(paths):
         if path.exists() and path.stat().st_size > 0:
             audio = AudioSegment.from_file(str(path), format="mp3")
+            audio = _adjust_volume(audio, gain_db, normalize_target_dbfs)
             audios.append(audio)
         else:
-            idx = output_paths.index(path)
-            print(f"  Warning: TTS failed for '{texts[idx][:30]}...', using silence")
+            print(f"  Warning: TTS failed for '{texts[i][:30]}...', using silence")
             audios.append(AudioSegment.silent(duration=500))
-
     return audios
 
+
+# ---------------------------------------------------------------------------
+# Public API (engine-agnostic)
+# ---------------------------------------------------------------------------
 
 def generate_native_audio(
     segments: list[Segment],
@@ -105,19 +222,27 @@ def generate_native_audio(
     rate: str = "+0%",
     pitch: str = "+0Hz",
     work_dir: Path | None = None,
+    gain_db: float = 0.0,
+    normalize_target_dbfs: float | None = None,
+    engine: str = "edge",
+    openai_config: dict | None = None,
 ) -> list[AudioSegment]:
     """
-    Generate native language (Chinese) TTS audio for all segments.
+    Generate native language TTS audio for all segments.
 
     Args:
-        segments: List of Segment objects with native_text
-        voice: edge-tts voice name
-        rate: Speech rate adjustment
-        pitch: Pitch adjustment
-        work_dir: Directory for temp files (auto-created if None)
+        segments: Segment objects with native_text
+        voice: edge-tts voice name (ignored when engine="openai")
+        rate: Speech rate adjustment (edge-tts only)
+        pitch: Pitch adjustment (edge-tts only)
+        work_dir: Directory for temp files
+        gain_db: Fixed dB gain to apply
+        normalize_target_dbfs: Normalize to this dBFS level
+        engine: "edge" or "openai"
+        openai_config: OpenAI engine settings dict
 
     Returns:
-        List of AudioSegment objects for the native language audio
+        List of AudioSegment objects
     """
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="echo_tts_"))
@@ -125,7 +250,18 @@ def generate_native_audio(
         work_dir.mkdir(parents=True, exist_ok=True)
 
     texts = [seg.native_text for seg in segments]
-    return _run_batch_tts(texts, work_dir, voice, rate, pitch, prefix="native")
+
+    if engine == "openai":
+        return _run_openai_batch(
+            texts, work_dir, "native",
+            openai_config or {},
+            gain_db, normalize_target_dbfs,
+        )
+    else:
+        return _run_edge_batch(
+            texts, work_dir, voice, rate, pitch, "native",
+            gain_db, normalize_target_dbfs,
+        )
 
 
 def generate_target_audio(
@@ -134,6 +270,10 @@ def generate_target_audio(
     rate: str = "+0%",
     pitch: str = "+0Hz",
     work_dir: Path | None = None,
+    gain_db: float = 0.0,
+    normalize_target_dbfs: float | None = None,
+    engine: str = "edge",
+    openai_config: dict | None = None,
 ) -> list[AudioSegment]:
     """
     Generate target language TTS audio for all segments.
@@ -141,14 +281,18 @@ def generate_target_audio(
     Used in text-only mode where no source audio file is provided.
 
     Args:
-        segments: List of Segment objects with target_text
-        voice: edge-tts voice name for the target language
-        rate: Speech rate adjustment
-        pitch: Pitch adjustment
-        work_dir: Directory for temp files (auto-created if None)
+        segments: Segment objects with target_text
+        voice: edge-tts voice name (ignored when engine="openai")
+        rate: Speech rate adjustment (edge-tts only)
+        pitch: Pitch adjustment (edge-tts only)
+        work_dir: Directory for temp files
+        gain_db: Fixed dB gain to apply
+        normalize_target_dbfs: Normalize to this dBFS level
+        engine: "edge" or "openai"
+        openai_config: OpenAI engine settings dict
 
     Returns:
-        List of AudioSegment objects for the target language audio
+        List of AudioSegment objects
     """
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="echo_tts_"))
@@ -156,4 +300,15 @@ def generate_target_audio(
         work_dir.mkdir(parents=True, exist_ok=True)
 
     texts = [seg.target_text for seg in segments]
-    return _run_batch_tts(texts, work_dir, voice, rate, pitch, prefix="target")
+
+    if engine == "openai":
+        return _run_openai_batch(
+            texts, work_dir, "target",
+            openai_config or {},
+            gain_db, normalize_target_dbfs,
+        )
+    else:
+        return _run_edge_batch(
+            texts, work_dir, voice, rate, pitch, "target",
+            gain_db, normalize_target_dbfs,
+        )

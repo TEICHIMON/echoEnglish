@@ -10,7 +10,7 @@
 
 # File paths (CLI arguments override these)
 paths:
-  scan: "/Users/sudami/Library/Mobile Documents/iCloud~com~cubeTC~MP3/Documents/mp3music/notebookLM/Programming/2026-03-29_21-51-54_English"               # folder path — triggers batch mode (processes all files)
+  scan: ""               # folder path — triggers batch mode (processes all files)
   audio: ""              # source audio file — audio mode (mp3, wav, m4a, etc.)
   lrc: ""                # LRC subtitle file — audio mode
   text: ""               # bilingual text file — text-only mode
@@ -23,10 +23,41 @@ timing:
   after_second_target: 1.2   # seconds of silence after second target audio (loop gap)
 
 tts:
+  # Engine: "edge" (free, via edge-tts) or "openai" (paid, via gpt-4o-mini-tts)
+  # OpenAI engine understands math formulas and reads them naturally.
+  # Requires OPENAI_API_KEY environment variable when engine is "openai".
+  engine: "edge"
+
+  # --- edge-tts settings ---
   target_voice: "ja-JP-NanamiNeural"   # Target language TTS voice (text-only mode)
   native_voice: "zh-CN-XiaoxiaoNeural" # Native language TTS voice
   rate: "+0%"                          # Speech rate adjustment (-50% to +50%)
   pitch: "+0Hz"                        # Pitch adjustment
+
+  # --- OpenAI TTS settings (used when engine: "openai") ---
+  openai:
+    model: "gpt-4o-mini-tts"
+    voice: "coral"                     # alloy, ash, ballad, cedar, coral, echo, fable, nova, onyx, sage, shimmer, verse
+    speed: 1.0                         # 0.25 to 4.0
+    # instructions: natural language prompt controlling how the model speaks.
+    # This is where the magic happens for math — tell it to read formulas naturally.
+    instructions: "用中文自然地朗读，数学表达式要读成口语形式，比如2ⁿ读作2的n次方"
+
+  # --- Volume control (applies to both engines) ---
+  # Two modes — normalize takes priority if set.
+  #
+  # gain: fixed dB adjustment applied to every TTS clip.
+  #   0  = no change (default)
+  #  -6  = reduce by 6 dB (noticeably quieter)
+  #  +3  = boost by 3 dB
+  gain: -6
+
+  # normalize: target average loudness (dBFS) for every TTS clip.
+  #   Leave empty to disable. When set, each clip is individually
+  #   scaled so its dBFS matches this value. Overrides 'gain'.
+  #   Typical spoken audio sits around -18 to -24 dBFS.
+  # normalize: -20
+  normalize:
 
 output:
   format: "m4a"
