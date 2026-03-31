@@ -14,6 +14,9 @@ AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "flac", "ogg", "aac", "wma"}
 # Text extension for text-only mode
 TEXT_EXTENSION = "txt"
 
+# Suffix appended to output files — skip these on re-scan
+ECHO_SUFFIX = "_echo"
+
 
 @dataclass
 class ScanItem:
@@ -60,10 +63,14 @@ def scan_folder(
 
     # --- Pass 1: find audio + LRC pairs ---
     if scan_audio:
-        # Collect all audio files
+        # Collect all audio files (skip previous echo outputs)
         audio_files: dict[str, Path] = {}
         for f in folder.iterdir():
-            if f.is_file() and f.suffix.lower().lstrip(".") in AUDIO_EXTENSIONS:
+            if (
+                f.is_file()
+                and f.suffix.lower().lstrip(".") in AUDIO_EXTENSIONS
+                and not f.stem.endswith(ECHO_SUFFIX)
+            ):
                 audio_files[f.stem] = f
 
         # Match each audio file with its LRC
@@ -79,13 +86,14 @@ def scan_folder(
             else:
                 print(f"  ⚠ Skipping {audio_path.name}: no matching .lrc file")
 
-    # --- Pass 2: find text files ---
+    # --- Pass 2: find text files (skip previous echo outputs) ---
     if scan_text:
         for f in sorted(folder.iterdir()):
             if (
                 f.is_file()
                 and f.suffix.lower().lstrip(".") == TEXT_EXTENSION
                 and f.stem not in paired_stems
+                and not f.stem.endswith(ECHO_SUFFIX)
             ):
                 items.append(ScanItem(
                     mode="text",
