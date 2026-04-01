@@ -680,6 +680,7 @@ def run_batch_mode(config: dict) -> None:
 
     # Process each item
     succeeded: list[str] = []
+    skipped: list[str] = []
     failed: list[tuple[str, str]] = []
     total = len(items)
 
@@ -689,9 +690,15 @@ def run_batch_mode(config: dict) -> None:
         print(f"  [{idx}/{total}] {label}")
         print(f"{'─' * 60}")
 
+        # Skip if echo output already exists
+        output_path, lrc_output_path = resolve_output_paths_for_item(item, config)
+        if output_path.exists() and lrc_output_path.exists():
+            print(f"  ⏭  Skipped (already exists): {output_path.name}, {lrc_output_path.name}")
+            skipped.append(label)
+            continue
+
         try:
             item_config = _config_for_item(config, item)
-            output_path, lrc_output_path = resolve_output_paths_for_item(item, config)
 
             if item.mode == "audio":
                 _run_single_audio(item_config, item, timing, output_path, lrc_output_path)
@@ -709,6 +716,8 @@ def run_batch_mode(config: dict) -> None:
     print(f"  Batch Complete")
     print(f"{'=' * 60}")
     print(f"  ✓ Succeeded: {len(succeeded)}")
+    if skipped:
+        print(f"  ⏭  Skipped:   {len(skipped)}")
     if failed:
         print(f"  ✗ Failed:    {len(failed)}")
         for name, error in failed:
