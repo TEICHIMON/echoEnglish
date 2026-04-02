@@ -18,6 +18,15 @@ from parser.lrc_parser import Segment
 
 
 # ---------------------------------------------------------------------------
+# Retry / concurrency settings for edge-tts
+# ---------------------------------------------------------------------------
+
+EDGE_CONCURRENCY = 3        # max parallel requests (lower = less 503s)
+EDGE_MAX_RETRIES = 3        # retry attempts per TTS call
+EDGE_RETRY_BASE_DELAY = 2.0 # seconds; doubles each retry (exponential backoff)
+
+
+# ---------------------------------------------------------------------------
 # Volume adjustment (shared by both engines)
 # ---------------------------------------------------------------------------
 
@@ -70,28 +79,38 @@ async def _edge_generate_batch(
     pitch: str,
     prefix: str,
 ) -> list[Path]:
-    """Generate TTS audio for multiple texts via edge-tts concurrently."""
-    output_paths = []
-    tasks = []
+    """Generate TTS audio for multiple texts via edge-tts with retry on 503."""
+    output_paths: list[Path] = []
+    for i in range(len(texts)):
+        output_paths.append(output_dir / f"{prefix}_{i:04d}.mp3")
 
-    for i, text in enumerate(texts):
-        out_path = output_dir / f"{prefix}_{i:04d}.mp3"
-        output_paths.append(out_path)
-        tasks.append(
-            _edge_generate_single(text, str(out_path), voice, rate, pitch)
-        )
+    semaphore = asyncio.Semaphore(EDGE_CONCURRENCY)
 
-    semaphore = asyncio.Semaphore(5)
-
-    async def _limited(coro):
+    async def _generate_with_retry(text: str, out_path: str):
+        """Run a single TTS call with concurrency limit and exponential-backoff retry."""
         async with semaphore:
-            try:
-                return await coro
-            except Exception as e:
-                print(f"  Warning: edge-tts generation failed: {e}")
-                return None
+            for attempt in range(1, EDGE_MAX_RETRIES + 1):
+                try:
+                    await _edge_generate_single(text, out_path, voice, rate, pitch)
+                    return
+                except Exception as e:
+                    err_str = str(e)
+                    is_transient = ("503" in err_str or "Invalid response status" in err_str)
+                    if is_transient and attempt < EDGE_MAX_RETRIES:
+                        delay = EDGE_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                        short_text = text[:30].replace("\n", " ")
+                        print(f"  ⟳ Retry {attempt}/{EDGE_MAX_RETRIES} in {delay:.0f}s "
+                              f"(503) for '{short_text}...'")
+                        await asyncio.sleep(delay)
+                    else:
+                        print(f"  Warning: edge-tts generation failed: {e}")
+                        return
 
-    await asyncio.gather(*[_limited(t) for t in tasks])
+    tasks = [
+        _generate_with_retry(text, str(out_path))
+        for text, out_path in zip(texts, output_paths)
+    ]
+    await asyncio.gather(*tasks)
     return output_paths
 
 
