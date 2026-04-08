@@ -18,9 +18,10 @@ if [[ $# -eq 0 ]]; then
     echo "用法: extract_audio <视频文件夹> [选项]"
     echo ""
     echo "选项:"
-    echo "  --bitrate, -b      音频比特率 (默认: 192k)"
-    echo "  --sample-rate, -r  采样率 Hz (默认: 44100)"
-    echo "  --overwrite        覆盖已存在的 .m4a 文件"
+    echo "  --bitrate, -b       音频比特率 (默认: 192k)"
+    echo "  --sample-rate, -r   采样率 Hz (默认: 44100)"
+    echo "  --max-duration, -d  单段最大秒数，超过则切分加数字后缀 (默认: 1200, 0=关闭)"
+    echo "  --overwrite         覆盖已存在的 .m4a 文件"
     exit 1
 fi
 
