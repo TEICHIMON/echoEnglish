@@ -74,4 +74,4 @@ loop:
   #   full:        T-S-N-S-T-S (default)
   #   progressive: T-S-N-S-T-S + T-S-silence-S-T-S (two passes per segment)
   #   shadow:      T-S-silence-S-T-S (native replaced with equal-length silence)
-  variant: "full"
+  variant: "progressive"
