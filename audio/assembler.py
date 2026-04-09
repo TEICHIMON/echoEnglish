@@ -1,8 +1,11 @@
 """
 Echo Loop assembler module.
 
-Builds the T-S-N-S-T-S (Target → Silence → Native → Silence → Target → Silence)
-Echo Loop pattern from individual audio components.
+Builds Echo Loop patterns from individual audio components.
+Supports three variants:
+  full:        T-S-N-S-T-S
+  progressive: T-S-N-S-T-S + T-S-silence-S-T-S
+  shadow:      T-S-silence-S-T-S
 
 Based on "Echo: Rebuilding the Natural Reflex of Language" by H. Reeve.
 """
@@ -33,29 +36,39 @@ def build_echo_loop(
     target_audio: AudioSegment,
     native_audio: AudioSegment,
     timing: EchoTiming,
+    variant: str = "full",
 ) -> AudioSegment:
     """
-    Build a single Echo Loop unit.
-    
-    Structure: T → S(0.8s) → N → S(0.5s) → T → S(1.2s)
-    
+    Build Echo Loop unit(s) for a single segment.
+
     Args:
         target_audio: The target language audio segment
-        native_audio: The native language (Chinese) TTS audio
+        native_audio: The native language TTS audio
         timing: EchoTiming configuration
-        
+        variant: "full", "progressive", or "shadow"
+
     Returns:
-        A single AudioSegment containing the complete Echo Loop
+        AudioSegment containing the loop(s)
     """
-    loop = (
-        target_audio
-        + timing.silence_after_first_target()
-        + native_audio
-        + timing.silence_after_native()
-        + target_audio
-        + timing.silence_after_second_target()
-    )
-    return loop
+    s1 = timing.silence_after_first_target()
+    s2 = timing.silence_after_native()
+    s3 = timing.silence_after_second_target()
+    native_silence = AudioSegment.silent(duration=len(native_audio))
+
+    if variant == "shadow":
+        # T-S-silence(len(N))-S-T-S
+        return target_audio + s1 + native_silence + s2 + target_audio + s3
+
+    # full pass: T-S-N-S-T-S
+    full_pass = target_audio + s1 + native_audio + s2 + target_audio + s3
+
+    if variant == "progressive":
+        # shadow pass: T-S-silence(len(N))-S-T-S
+        shadow_pass = target_audio + s1 + native_silence + s2 + target_audio + s3
+        return full_pass + shadow_pass
+
+    # variant == "full" (default)
+    return full_pass
 
 
 def assemble_all_loops(
@@ -63,16 +76,18 @@ def assemble_all_loops(
     native_audios: list[AudioSegment],
     timing: EchoTiming,
     progress_callback=None,
+    variant: str = "full",
 ) -> AudioSegment:
     """
     Assemble all Echo Loops into a single continuous audio track.
-    
+
     Args:
         target_audios: List of target language audio segments
         native_audios: List of native language TTS audio segments
         timing: EchoTiming configuration
         progress_callback: Optional callback(current, total) for progress reporting
-        
+        variant: "full", "progressive", or "shadow"
+
     Returns:
         Complete AudioSegment with all loops concatenated
     """
@@ -86,14 +101,12 @@ def assemble_all_loops(
     if total == 0:
         return AudioSegment.empty()
 
-    # Start with the first loop
-    result = build_echo_loop(target_audios[0], native_audios[0], timing)
+    result = build_echo_loop(target_audios[0], native_audios[0], timing, variant)
     if progress_callback:
         progress_callback(1, total)
 
-    # Append remaining loops
     for i in range(1, total):
-        loop = build_echo_loop(target_audios[i], native_audios[i], timing)
+        loop = build_echo_loop(target_audios[i], native_audios[i], timing, variant)
         result = result + loop
         if progress_callback:
             progress_callback(i + 1, total)

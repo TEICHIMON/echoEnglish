@@ -44,7 +44,7 @@ def get_video_duration(video: Path) -> float:
         str(video),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
         if result.returncode != 0:
             return 0.0
         return float(result.stdout.strip())
@@ -83,7 +83,7 @@ def _run_ffmpeg_extract(
         str(output),
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if result.returncode != 0:
         _print_ffmpeg_error(output.name, result.stderr)
         return False
@@ -95,7 +95,7 @@ def extract_audio(
     bitrate: str = "192k",
     sample_rate: int = 44100,
     overwrite: bool = False,
-    max_duration: float = 1200.0,
+    max_duration: float = 600.0,
 ) -> tuple[str, list[Path]]:
     """
     用 ffmpeg 从单个视频文件中提取音频，输出为 .m4a。

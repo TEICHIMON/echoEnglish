@@ -73,6 +73,9 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "delimiter": "-",
             "split_strategy": "last",
         },
+        "loop": {
+            "variant": "full",
+        },
     }
 
     if config_path and Path(config_path).exists():
@@ -83,7 +86,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
             if "mode" in user_config:
                 defaults["mode"] = user_config["mode"] or ""
             # Deep merge dict sections (except tts.openai which is nested)
-            for section in ("paths", "timing", "output", "lrc"):
+            for section in ("paths", "timing", "output", "lrc","loop"):
                 if section in user_config and isinstance(user_config[section], dict):
                     defaults[section].update(user_config[section])
             # TTS section — merge top-level keys, then openai sub-dict
@@ -210,6 +213,11 @@ Modes:
         help="Silence after second target phrase (seconds)",
     )
 
+    parser.add_argument(
+        "--variant", choices=["full", "progressive", "shadow"], default=None,
+        help="Loop variant: full (T-S-N-S-T-S), progressive (full + shadow), shadow (no native audio)",
+    )
+
     # --- TTS overrides ---
     tts_group = parser.add_argument_group("TTS (overrides config)")
     tts_group.add_argument(
@@ -318,6 +326,9 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["lrc"]["delimiter"] = args.delimiter
     if args.split_strategy:
         config["lrc"]["split_strategy"] = args.split_strategy
+
+    if args.variant:
+        config["loop"]["variant"] = args.variant
 
     return config
 
@@ -459,9 +470,11 @@ def _assemble_and_export(
     timing, config, output_path, lrc_output_path, work_dir,
 ) -> None:
     """Assemble Echo Loops, export audio and LRC, clean up."""
+    variant = config.get("loop", {}).get("variant", "full")
+
     print("\n  Assembling Echo Loops...")
-    result = assemble_all_loops(target_audios, native_audios, timing, progress_bar)
-    print()  # newline after progress bar
+    result = assemble_all_loops(target_audios, native_audios, timing, progress_bar, variant=variant)
+    print()
 
     print("\n  Exporting...")
     export_audio(
@@ -475,11 +488,10 @@ def _assemble_and_export(
     generate_echo_lrc(
         segments, target_audios, native_audios, timing,
         lrc_output_path, delimiter=config["lrc"]["delimiter"],
+        variant=variant,
     )
 
-    # Cleanup
     shutil.rmtree(work_dir, ignore_errors=True)
-
     print(f"\n✓ Done! Echo Loop file saved to: {output_path}")
 
 
@@ -513,6 +525,7 @@ def run_audio_mode(config: dict) -> None:
     if config["tts"]["engine"] == "edge":
         print(f"  Native TTS: {config['tts']['native_voice']}")
     print(f"  TTS Volume: {_volume_label(config)}")
+    print(f"  Variant:  {config['loop']['variant']}")
     print("=" * 60)
 
     # Step 1: Load source audio

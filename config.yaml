@@ -67,3 +67,11 @@ output:
 lrc:
   delimiter: "-"              # separator between target text and native text
   split_strategy: "last"      # "last" = split on last delimiter, "first" = split on first
+
+
+loop:
+  # Loop variant: "full", "progressive", or "shadow"
+  #   full:        T-S-N-S-T-S (default)
+  #   progressive: T-S-N-S-T-S + T-S-silence-S-T-S (two passes per segment)
+  #   shadow:      T-S-silence-S-T-S (native replaced with equal-length silence)
+  variant: "full"
