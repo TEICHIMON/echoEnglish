@@ -2,9 +2,7 @@
 Echo Loop LRC writer module.
 
 Generates an LRC subtitle file for the assembled Echo Loop audio.
-One line per loop, preserving the original bilingual text format
-(target + delimiter + native). Only the timestamps are recalculated
-to match the T-S-N-S-T-S assembled audio.
+Supports full, progressive, and shadow variants.
 """
 
 from pathlib import Path
@@ -23,6 +21,22 @@ def _fmt_lrc_time(ms: int) -> str:
     return f"[{minutes:02d}:{seconds:05.2f}]"
 
 
+def _loop_duration_ms(
+    target_dur: int,
+    native_dur: int,
+    timing: EchoTiming,
+) -> int:
+    """Calculate the total duration in ms of one T-S-?-S-T-S loop."""
+    return (
+        target_dur
+        + int(timing.after_first_target * 1000)
+        + native_dur  # actual audio or equal-length silence
+        + int(timing.after_native * 1000)
+        + target_dur
+        + int(timing.after_second_target * 1000)
+    )
+
+
 def generate_echo_lrc(
     segments: list[Segment],
     target_audios: list[AudioSegment],
@@ -30,21 +44,19 @@ def generate_echo_lrc(
     timing: EchoTiming,
     output_path: str | Path,
     delimiter: str = "-",
+    variant: str = "full",
 ) -> Path:
     """
     Generate an LRC subtitle file matching the Echo Loop audio.
-
-    One line per loop with the original bilingual text. Timestamps are
-    recalculated by walking through the same T-S-N-S-T-S structure
-    used by the assembler.
 
     Args:
         segments: Original parsed segments (for text content)
         target_audios: Target language AudioSegments
         native_audios: Native language TTS AudioSegments
-        timing: EchoTiming configuration (silence durations)
+        timing: EchoTiming configuration
         output_path: Where to write the .lrc file
-        delimiter: Delimiter between target and native text in output
+        delimiter: Delimiter between target and native text
+        variant: "full", "progressive", or "shadow"
 
     Returns:
         Path to the written LRC file
@@ -59,28 +71,30 @@ def generate_echo_lrc(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    silence_after_t1_ms = int(timing.after_first_target * 1000)
-    silence_after_n_ms = int(timing.after_native * 1000)
-    silence_after_t2_ms = int(timing.after_second_target * 1000)
-
     lines: list[str] = []
     pos_ms = 0
 
     for i, seg in enumerate(segments):
         target_dur = len(target_audios[i])
         native_dur = len(native_audios[i])
-
-        # Record the loop start timestamp with original bilingual text
         text = f"{seg.target_text}{delimiter}{seg.native_text}"
-        lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
+        loop_dur = _loop_duration_ms(target_dur, native_dur, timing)
 
-        # Advance through T-S-N-S-T-S to find next loop's start
-        pos_ms += target_dur                # T1
-        pos_ms += silence_after_t1_ms       # S1
-        pos_ms += native_dur                # N
-        pos_ms += silence_after_n_ms        # S2
-        pos_ms += target_dur                # T2
-        pos_ms += silence_after_t2_ms       # S3
+        if variant == "shadow":
+            lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
+            pos_ms += loop_dur
+
+        elif variant == "progressive":
+            # Pass 1: full (with native audio)
+            lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
+            pos_ms += loop_dur
+            # Pass 2: shadow (native replaced with silence, same duration)
+            lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
+            pos_ms += loop_dur
+
+        else:  # full
+            lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
+            pos_ms += loop_dur
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
