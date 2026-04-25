@@ -10,7 +10,7 @@
     python extract_audio.py /path/to/videos --bitrate 256k
     python extract_audio.py /path/to/videos --sample-rate 48000
     python extract_audio.py /path/to/videos --overwrite
-    python extract_audio.py /path/to/videos --max-duration 600
+    python extract_audio.py /path/to/videos --split-threshold 900 --chunk-duration 600
 """
 
 import argparse
@@ -19,20 +19,24 @@ import subprocess
 import sys
 from pathlib import Path
 
-# 常见视频扩展名
+# 常见视频和音频扩展名
 VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv",
     ".webm", ".ts", ".m2ts", ".mpg", ".mpeg", ".3gp",
 }
+AUDIO_EXTENSIONS = {
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".wma", ".m4r",
+}
+MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 
-def find_videos(folder: Path) -> list[Path]:
-    """扫描文件夹，返回所有视频文件（不递归子目录）。"""
-    videos = [
+def find_media(folder: Path) -> list[Path]:
+    """扫描文件夹，返回所有音视频文件（不递归子目录）。"""
+    media = [
         f for f in sorted(folder.iterdir())
-        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
+        if f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS
     ]
-    return videos
+    return media
 
 
 def get_video_duration(video: Path) -> float:
@@ -95,13 +99,14 @@ def extract_audio(
     bitrate: str = "192k",
     sample_rate: int = 44100,
     overwrite: bool = False,
-    max_duration: float = 600.0,
+    split_threshold: float = 900.0,
+    chunk_duration: float = 600.0,
 ) -> tuple[str, list[Path]]:
     """
     用 ffmpeg 从单个视频文件中提取音频，输出为 .m4a。
-    若视频时长超过 max_duration 秒（默认 20 分钟），则按该上限切分为多个片段，
+    若视频时长超过 split_threshold 秒（默认 15 分钟），则按 chunk_duration（默认 10 分钟）切分为多个片段，
     文件名添加数字后缀（如 video_01.m4a, video_02.m4a）。
-    传 max_duration <= 0 可关闭切分。
+    传 split_threshold <= 0 可关闭切分。
 
     ffmpeg 命令（单文件）:
         ffmpeg -y -i input.mp4 -vn -acodec aac -b:a 192k -ar 44100 -f ipod output.m4a
@@ -111,11 +116,17 @@ def extract_audio(
     Returns:
         (status, outputs) 其中 status 为 "ok" | "skipped" | "failed"。
     """
-    duration = get_video_duration(video) if max_duration > 0 else 0.0
+    duration = get_video_duration(video) if split_threshold > 0 else 0.0
 
     # —— 单文件路径（不切分）——
-    if max_duration <= 0 or duration <= 0 or duration <= max_duration:
+    if split_threshold <= 0 or duration <= 0 or duration <= split_threshold:
         output = video.with_suffix(".m4a")
+        
+        # 避免自己覆盖自己：如果输入已经是 m4a 并且不需要切分，直接跳过
+        if video.resolve() == output.resolve():
+            print(f"  ⏭  跳过（文件已是 m4a 格式且无需切分）: {output.name}")
+            return "skipped", []
+
         if output.exists() and not overwrite:
             print(f"  ⏭  跳过（已存在）: {output.name}")
             return "skipped", []
@@ -128,7 +139,15 @@ def extract_audio(
         return "ok", [output]
 
     # —— 切分路径 ——
-    n_chunks = math.ceil(duration / max_duration)
+    full_chunks = int(duration // chunk_duration)
+    remainder = duration % chunk_duration
+    
+    # 如果最后一段剩下的时间太短（少于单段时长的 30%），则合并到前一段
+    if remainder > 0 and remainder < (chunk_duration * 0.3) and full_chunks > 0:
+        n_chunks = full_chunks
+    else:
+        n_chunks = math.ceil(duration / chunk_duration)
+
     width = max(2, len(str(n_chunks)))
     chunk_paths = [
         video.parent / f"{video.stem}_{i:0{width}d}.m4a"
@@ -143,9 +162,9 @@ def extract_audio(
 
     succeeded: list[Path] = []
     for idx, chunk_path in enumerate(chunk_paths):
-        start = idx * max_duration
+        start = idx * chunk_duration
         # 最后一段不限制时长，让 ffmpeg 跑到 EOF
-        chunk_dur: float | None = max_duration if idx < n_chunks - 1 else None
+        chunk_dur: float | None = chunk_duration if idx < n_chunks - 1 else None
 
         ok = _run_ffmpeg_extract(
             video, chunk_path, bitrate, sample_rate,
@@ -163,11 +182,11 @@ def extract_audio(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="从文件夹中所有视频提取音频为 m4a 格式",
+        description="从文件夹中所有音视频文件提取/转换为 m4a 格式，并支持长文件切分",
     )
     parser.add_argument(
         "folder",
-        help="包含视频文件的文件夹路径",
+        help="包含音视频文件的文件夹路径",
     )
     parser.add_argument(
         "--bitrate", "-b",
@@ -186,10 +205,16 @@ def main():
         help="覆盖已存在的 .m4a 文件 (默认跳过)",
     )
     parser.add_argument(
-        "--max-duration", "-d",
+        "--split-threshold", "-t",
         type=float,
-        default=1200.0,
-        help="单个音频片段最大时长（秒），超过则切分并加数字后缀；传 0 关闭切分 (默认: 1200 = 20 分钟)",
+        default=900.0,
+        help="触发切分的时长阈值（秒）；传 0 关闭切分 (默认: 900 = 15 分钟)",
+    )
+    parser.add_argument(
+        "--chunk-duration", "-c",
+        type=float,
+        default=600.0,
+        help="切分时的单段音频时长（秒） (默认: 600 = 10 分钟)",
     )
     args = parser.parse_args()
 
@@ -198,16 +223,17 @@ def main():
         print(f"❌ 不是有效的文件夹: {folder}", file=sys.stderr)
         sys.exit(1)
 
-    videos = find_videos(folder)
-    if not videos:
-        print("ℹ️  未找到视频文件")
+    media_files = find_media(folder)
+    if not media_files:
+        print("ℹ️  未找到音视频文件")
         sys.exit(0)
 
     print(f"📂 文件夹: {folder}")
-    print(f"🎬 找到 {len(videos)} 个视频文件")
+    print(f"🎬 找到 {len(media_files)} 个音视频文件")
     print(f"⚙️  比特率: {args.bitrate} | 采样率: {args.sample_rate} Hz")
-    if args.max_duration > 0:
-        print(f"✂  切分阈值: {args.max_duration:.0f} 秒 ({args.max_duration / 60:.1f} 分钟)")
+    if args.split_threshold > 0:
+        print(f"✂  切分阈值: {args.split_threshold:.0f} 秒 ({args.split_threshold / 60:.1f} 分钟)")
+        print(f"🔪 切分段长: {args.chunk_duration:.0f} 秒 ({args.chunk_duration / 60:.1f} 分钟)")
     else:
         print("✂  切分: 已关闭")
     print()
@@ -216,13 +242,14 @@ def main():
     skipped = 0
     failed = 0
 
-    for video in videos:
+    for media_file in media_files:
         status, _ = extract_audio(
-            video,
+            media_file,
             bitrate=args.bitrate,
             sample_rate=args.sample_rate,
             overwrite=args.overwrite,
-            max_duration=args.max_duration,
+            split_threshold=args.split_threshold,
+            chunk_duration=args.chunk_duration,
         )
         if status == "ok":
             succeeded += 1
