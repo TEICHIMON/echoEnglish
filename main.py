@@ -64,7 +64,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "after_second_target": 1.2,
         },
         "tts": {
-            "engine": "edge",
+            "engine": "google",
             "target_voice": "ja-JP-NanamiNeural",
             "native_voice": "zh-CN-XiaoxiaoNeural",
             "rate": "+0%",
@@ -75,6 +75,12 @@ def load_config(config_path: str | Path | None = None) -> dict:
                 "speed": 1.0,
                 "instructions": "",
             },
+            "google": {
+                "target_voice": "ja-JP-Neural2-B",
+                "native_voice": "cmn-CN-Chirp3-HD-Kore",
+                "speaking_rate": 1.0,
+                "pitch": 0.0,
+            },
             "gain": 0,
             "normalize": None,
         },
@@ -84,7 +90,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "sample_rate": 44100,
         },
         "lrc": {
-            "delimiter": "-",
+            "delimiter": "|||",
             "split_strategy": "last",
         },
         "loop": {
@@ -105,8 +111,10 @@ def load_config(config_path: str | Path | None = None) -> dict:
                 tts_user = user_config["tts"]
                 if "openai" in tts_user and isinstance(tts_user["openai"], dict):
                     defaults["tts"]["openai"].update(tts_user["openai"])
+                if "google" in tts_user and isinstance(tts_user["google"], dict):
+                    defaults["tts"]["google"].update(tts_user["google"])
                 for k, v in tts_user.items():
-                    if k != "openai":
+                    if k not in ("openai", "google"):
                         defaults["tts"][k] = v
 
     # Backward compatibility: old "voice" key → native_voice
@@ -116,8 +124,8 @@ def load_config(config_path: str | Path | None = None) -> dict:
     elif "voice" in tts:
         tts.pop("voice")
 
-    if tts.get("engine") not in ("edge", "openai"):
-        tts["engine"] = "edge"
+    if tts.get("engine") not in ("edge", "openai", "google"):
+        tts["engine"] = "google"
 
     if tts.get("gain") is None:
         tts["gain"] = 0
@@ -130,6 +138,9 @@ def load_config(config_path: str | Path | None = None) -> dict:
         tts["normalize"] = None
 
     tts["openai"]["speed"] = float(tts["openai"].get("speed", 1.0))
+
+    tts["google"]["speaking_rate"] = float(tts["google"].get("speaking_rate", 1.0))
+    tts["google"]["pitch"] = float(tts["google"].get("pitch", 0.0))
 
     return defaults
 
@@ -209,7 +220,7 @@ Modes:
     )
 
     tts_group = parser.add_argument_group("TTS (overrides config)")
-    tts_group.add_argument("--engine", choices=["edge", "openai"], default=None)
+    tts_group.add_argument("--engine", choices=["edge", "openai", "google"], default=None)
     tts_group.add_argument("--target-voice", default=None)
     tts_group.add_argument("--native-voice", default=None)
     tts_group.add_argument("--voice", default=None)
@@ -218,6 +229,8 @@ Modes:
     tts_group.add_argument("--normalize", type=float, default=None)
     tts_group.add_argument("--openai-voice", default=None)
     tts_group.add_argument("--openai-instructions", default=None)
+    tts_group.add_argument("--google-voice", default=None)
+    tts_group.add_argument("--google-target-voice", default=None)
 
     lrc_group = parser.add_argument_group("LRC / text parsing (overrides config)")
     lrc_group.add_argument("--delimiter", default=None)
@@ -270,6 +283,11 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["tts"]["openai"]["voice"] = args.openai_voice
     if args.openai_instructions:
         config["tts"]["openai"]["instructions"] = args.openai_instructions
+
+    if args.google_voice:
+        config["tts"]["google"]["native_voice"] = args.google_voice
+    if args.google_target_voice:
+        config["tts"]["google"]["target_voice"] = args.google_target_voice
 
     if args.delimiter:
         config["lrc"]["delimiter"] = args.delimiter
@@ -364,6 +382,9 @@ def _engine_label(config: dict) -> str:
     if engine == "openai":
         oai = config["tts"]["openai"]
         return f"openai ({oai['model']}, voice={oai['voice']})"
+    if engine == "google":
+        g = config["tts"]["google"]
+        return f"google (target={g['target_voice']}, native={g['native_voice']})"
     return "edge-tts"
 
 
@@ -411,6 +432,7 @@ def _tts_engine_kwargs(config: dict) -> dict:
     return {
         "engine": config["tts"]["engine"],
         "openai_config": config["tts"]["openai"],
+        "google_config": config["tts"]["google"],
     }
 
 

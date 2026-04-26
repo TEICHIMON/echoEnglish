@@ -23,16 +23,26 @@ timing:
   after_second_target: 1.2   # seconds of silence after second target audio (loop gap)
 
 tts:
-  # Engine: "edge" (free, via edge-tts) or "openai" (paid, via gpt-4o-mini-tts)
-  # OpenAI engine understands math formulas and reads them naturally.
-  # Requires OPENAI_API_KEY environment variable when engine is "openai".
-  engine: "edge"
+  # Engine: "google" (default, paid, stable), "edge" (free), or
+  # "openai" (paid, gpt-4o-mini-tts; understands math formulas).
+  # Required environment per engine:
+  #   google -> GOOGLE_APPLICATION_CREDENTIALS pointing to service account JSON
+  #   openai -> OPENAI_API_KEY
+  #   edge   -> none
+  engine: "google"
 
-  # --- edge-tts settings ---
+  # --- edge-tts settings (used when engine: "edge") ---
   target_voice: "ja-JP-NanamiNeural"   # Target language TTS voice (text-only mode)
   native_voice: "zh-CN-XiaoxiaoNeural" # Native language TTS voice
   rate: "+0%"                          # Speech rate adjustment (-50% to +50%)
   pitch: "+0Hz"                        # Pitch adjustment
+
+  # --- Google Cloud TTS settings (used when engine: "google") ---
+  google:
+    target_voice: "ja-JP-Neural2-B"           # Japanese male Neural2
+    native_voice: "cmn-CN-Chirp3-HD-Kore"     # Chinese female Chirp3-HD
+    speaking_rate: 1.0                         # 0.25 to 4.0
+    pitch: 0.0                                 # -20.0 to 20.0 semitones (ignored by Chirp3-HD)
 
   # --- OpenAI TTS settings (used when engine: "openai") ---
   openai:
@@ -65,7 +75,12 @@ output:
   sample_rate: 44100
 
 lrc:
-  delimiter: "-"              # separator between target text and native text
+  # Separator between target text and native text on a single line.
+  # Default "|||" is chosen because it is extremely unlikely to appear in
+  # natural-language content. Older files using "-" as the separator can
+  # keep working by setting `delimiter: "-"` here, but this is fragile when
+  # content itself contains hyphens (e.g. "two-three tree", "2-3").
+  delimiter: "|||"
   split_strategy: "last"      # "last" = split on last delimiter, "first" = split on first
 
 

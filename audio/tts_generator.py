@@ -1,9 +1,10 @@
 """
 TTS generator module.
 
-Generates audio from text using edge-tts or OpenAI gpt-4o-mini-tts.
+Generates audio from text using edge-tts, OpenAI gpt-4o-mini-tts, or
+Google Cloud Text-to-Speech.
 Supports both native language and target language TTS generation.
-Engine is selected via config: "edge" (free) or "openai" (paid, supports math).
+Engine is selected via config: "edge", "openai", or "google".
 """
 
 import asyncio
@@ -28,6 +29,15 @@ logger = logging.getLogger(__name__)
 EDGE_CONCURRENCY = 3        # max parallel requests (lower = less 503s)
 EDGE_MAX_RETRIES = 4        # retry attempts per TTS call
 EDGE_RETRY_BASE_DELAY = 2.0 # seconds; doubles each retry (exponential backoff)
+
+
+# ---------------------------------------------------------------------------
+# Retry / concurrency settings for Google Cloud TTS
+# ---------------------------------------------------------------------------
+
+GOOGLE_CONCURRENCY = 3
+GOOGLE_MAX_RETRIES = 4
+GOOGLE_RETRY_BASE_DELAY = 2.0
 
 
 # Substrings in the exception message that indicate a transient failure
@@ -247,6 +257,157 @@ def _run_openai_batch(
 
 
 # ---------------------------------------------------------------------------
+# Google Cloud TTS engine
+# ---------------------------------------------------------------------------
+
+def _get_google_client():
+    """Lazily import and create a Google Cloud TTS client."""
+    try:
+        from google.cloud import texttospeech  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "google-cloud-texttospeech is required for engine='google'. "
+            "Install it with: pip install google-cloud-texttospeech"
+        )
+
+    cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+    if not cred_path:
+        raise RuntimeError(
+            "GOOGLE_APPLICATION_CREDENTIALS environment variable is not set. "
+            "Set it to the path of your service account JSON file "
+            "(e.g., in .env: GOOGLE_APPLICATION_CREDENTIALS=./google-credentials.json)"
+        )
+    if not Path(cred_path).exists():
+        raise RuntimeError(f"Google credentials file not found: {cred_path}")
+
+    from google.cloud import texttospeech
+    return texttospeech.TextToSpeechClient()
+
+
+def _language_code_from_voice(voice_name: str) -> str:
+    """Extract BCP-47 language code from a Google voice name.
+
+    Examples:
+        'cmn-CN-Chirp3-HD-Kore' -> 'cmn-CN'
+        'ja-JP-Neural2-B'       -> 'ja-JP'
+    """
+    parts = voice_name.split("-")
+    if len(parts) < 2:
+        raise ValueError(f"Invalid Google voice name: {voice_name!r}")
+    return f"{parts[0]}-{parts[1]}"
+
+
+def _google_generate_single(
+    client,
+    text: str,
+    output_path: Path,
+    voice_name: str,
+    speaking_rate: float,
+    pitch: float,
+) -> None:
+    """Generate a single TTS audio file via Google Cloud TTS."""
+    from google.cloud import texttospeech
+
+    language_code = _language_code_from_voice(voice_name)
+
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code=language_code,
+        name=voice_name,
+    )
+
+    audio_kwargs = {"audio_encoding": texttospeech.AudioEncoding.MP3}
+    if speaking_rate != 1.0:
+        audio_kwargs["speaking_rate"] = speaking_rate
+    # Chirp3-HD voices reject the pitch parameter
+    if pitch != 0.0 and "Chirp3" not in voice_name:
+        audio_kwargs["pitch"] = pitch
+
+    audio_config = texttospeech.AudioConfig(**audio_kwargs)
+
+    response = client.synthesize_speech(
+        input=synthesis_input,
+        voice=voice,
+        audio_config=audio_config,
+    )
+
+    with open(output_path, "wb") as f:
+        f.write(response.audio_content)
+
+
+def _run_google_batch(
+    texts: list[str],
+    work_dir: Path,
+    prefix: str,
+    google_config: dict,
+    gain_db: float,
+    normalize_target_dbfs: float | None,
+) -> list[AudioSegment]:
+    """Generate TTS via Google Cloud for a batch of texts (concurrent + retries)."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    client = _get_google_client()
+
+    voice_key = "native_voice" if prefix == "native" else "target_voice"
+    voice_name = google_config.get(voice_key, "")
+    if not voice_name:
+        raise RuntimeError(
+            f"Google TTS: '{voice_key}' is not configured in tts.google"
+        )
+
+    speaking_rate = float(google_config.get("speaking_rate", 1.0))
+    pitch = float(google_config.get("pitch", 0.0))
+
+    output_paths: list[Path] = [
+        work_dir / f"{prefix}_{i:04d}.mp3" for i in range(len(texts))
+    ]
+
+    def _work(idx: int) -> None:
+        text = texts[idx]
+        out_path = output_paths[idx]
+        for attempt in range(1, GOOGLE_MAX_RETRIES + 1):
+            try:
+                _google_generate_single(
+                    client, text, out_path, voice_name, speaking_rate, pitch,
+                )
+                return
+            except Exception as e:
+                err_str = str(e)
+                # Reuse the shared transient classifier; also catch Google's
+                # gRPC quota / unavailable codes that aren't in the table.
+                err_label = _classify_transient(err_str)
+                if not err_label and any(
+                    s in err_str
+                    for s in ("429", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED")
+                ):
+                    err_label = "google-transient"
+
+                if err_label and attempt < GOOGLE_MAX_RETRIES:
+                    delay = GOOGLE_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    short_text = text[:30].replace("\n", " ")
+                    logger.warning(
+                        f"⟳ Retry {attempt}/{GOOGLE_MAX_RETRIES} in {delay:.0f}s "
+                        f"({err_label}) for '{short_text}...'"
+                    )
+                    time.sleep(delay)
+                else:
+                    kind = err_label or "non-retryable"
+                    logger.warning(
+                        f"Google TTS failed [{kind}, "
+                        f"attempt {attempt}/{GOOGLE_MAX_RETRIES}]: {e}"
+                    )
+                    return
+
+    with ThreadPoolExecutor(max_workers=GOOGLE_CONCURRENCY) as pool:
+        futures = [pool.submit(_work, i) for i in range(len(texts))]
+        for f in as_completed(futures):
+            f.result()
+
+    return _load_audio_files(output_paths, texts, gain_db, normalize_target_dbfs)
+
+
+# ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
@@ -307,6 +468,7 @@ def generate_native_audio(
     normalize_target_dbfs: float | None = None,
     engine: str = "edge",
     openai_config: dict | None = None,
+    google_config: dict | None = None,
 ) -> list[AudioSegment]:
     """Generate native language TTS audio for all segments."""
     if work_dir is None:
@@ -316,7 +478,13 @@ def generate_native_audio(
 
     texts = [seg.native_text for seg in segments]
 
-    if engine == "openai":
+    if engine == "google":
+        return _run_google_batch(
+            texts, work_dir, "native",
+            google_config or {},
+            gain_db, normalize_target_dbfs,
+        )
+    elif engine == "openai":
         return _run_openai_batch(
             texts, work_dir, "native",
             openai_config or {},
@@ -339,6 +507,7 @@ def generate_target_audio(
     normalize_target_dbfs: float | None = None,
     engine: str = "edge",
     openai_config: dict | None = None,
+    google_config: dict | None = None,
 ) -> list[AudioSegment]:
     """Generate target language TTS audio for all segments."""
     if work_dir is None:
@@ -348,7 +517,13 @@ def generate_target_audio(
 
     texts = [seg.target_text for seg in segments]
 
-    if engine == "openai":
+    if engine == "google":
+        return _run_google_batch(
+            texts, work_dir, "target",
+            google_config or {},
+            gain_db, normalize_target_dbfs,
+        )
+    elif engine == "openai":
         return _run_openai_batch(
             texts, work_dir, "target",
             openai_config or {},
