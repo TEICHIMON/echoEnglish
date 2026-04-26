@@ -5,3 +5,5 @@
 /.env
 /google-credentials.json
 /*-credentials.json
+/logs/
+/.claude/
