@@ -5,8 +5,13 @@ Scans a directory for audio+LRC pairs and/or text files,
 builds a work list, and returns it for batch processing.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
+
 
 # Audio extensions we recognise (lowercase, without dot)
 AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "flac", "ogg", "aac", "wma"}
@@ -40,30 +45,19 @@ def scan_folder(
     folder: str | Path,
     mode: str = "",
 ) -> list[ScanItem]:
-    """
-    Scan a folder and build a work list of items to process.
-
-    Args:
-        folder: Path to the directory to scan
-        mode: "" (auto — find both), "audio" (audio+lrc pairs only),
-              "text" (text files only)
-
-    Returns:
-        List of ScanItem objects, sorted by filename
-    """
+    """Scan a folder and build a work list of items to process."""
     folder = Path(folder)
     if not folder.is_dir():
         raise NotADirectoryError(f"Scan path is not a directory: {folder}")
 
     items: list[ScanItem] = []
-    paired_stems: set[str] = set()  # stems already claimed by audio pairs
+    paired_stems: set[str] = set()
 
     scan_audio = mode in ("", "audio")
     scan_text = mode in ("", "text")
 
     # --- Pass 1: find audio + LRC pairs ---
     if scan_audio:
-        # Collect all audio files (skip previous echo outputs)
         audio_files: dict[str, Path] = {}
         for f in folder.iterdir():
             if (
@@ -73,7 +67,6 @@ def scan_folder(
             ):
                 audio_files[f.stem] = f
 
-        # Match each audio file with its LRC
         for stem, audio_path in sorted(audio_files.items()):
             lrc_path = folder / f"{stem}.lrc"
             if lrc_path.exists():
@@ -84,7 +77,9 @@ def scan_folder(
                 ))
                 paired_stems.add(stem)
             else:
-                print(f"  ⚠ Skipping {audio_path.name}: no matching .lrc file")
+                logger.warning(
+                    f"⚠ Skipping {audio_path.name}: no matching .lrc file"
+                )
 
     # --- Pass 2: find text files (skip previous echo outputs) ---
     if scan_text:
@@ -104,7 +99,7 @@ def scan_folder(
 
 
 def print_scan_summary(items: list[ScanItem]) -> None:
-    """Print a summary of what was found in the scan."""
+    """Log a summary of what was found in the scan."""
     audio_count = sum(1 for it in items if it.mode == "audio")
     text_count = sum(1 for it in items if it.mode == "text")
 
@@ -115,6 +110,6 @@ def print_scan_summary(items: list[ScanItem]) -> None:
         parts.append(f"{text_count} text file{'s' if text_count != 1 else ''}")
 
     if parts:
-        print(f"  Found {', '.join(parts)}")
+        logger.info(f"  Found {', '.join(parts)}")
     else:
-        print("  No processable files found")
+        logger.info("  No processable files found")

@@ -5,12 +5,16 @@ Generates an LRC subtitle file for the assembled Echo Loop audio.
 Supports full, progressive, and shadow variants.
 """
 
+import logging
 from pathlib import Path
 
 from pydub import AudioSegment
 
 from audio.assembler import EchoTiming
 from parser.lrc_parser import Segment
+
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt_lrc_time(ms: int) -> str:
@@ -30,7 +34,7 @@ def _loop_duration_ms(
     return (
         target_dur
         + int(timing.after_first_target * 1000)
-        + native_dur  # actual audio or equal-length silence
+        + native_dur
         + int(timing.after_native * 1000)
         + target_dur
         + int(timing.after_second_target * 1000)
@@ -46,21 +50,7 @@ def generate_echo_lrc(
     delimiter: str = "-",
     variant: str = "full",
 ) -> Path:
-    """
-    Generate an LRC subtitle file matching the Echo Loop audio.
-
-    Args:
-        segments: Original parsed segments (for text content)
-        target_audios: Target language AudioSegments
-        native_audios: Native language TTS AudioSegments
-        timing: EchoTiming configuration
-        output_path: Where to write the .lrc file
-        delimiter: Delimiter between target and native text
-        variant: "full", "progressive", or "shadow"
-
-    Returns:
-        Path to the written LRC file
-    """
+    """Generate an LRC subtitle file matching the Echo Loop audio."""
     if len(segments) != len(target_audios) or len(segments) != len(native_audios):
         raise ValueError(
             f"Length mismatch: {len(segments)} segments, "
@@ -85,10 +75,8 @@ def generate_echo_lrc(
             pos_ms += loop_dur
 
         elif variant == "progressive":
-            # Pass 1: full (with native audio)
             lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
             pos_ms += loop_dur
-            # Pass 2: shadow (native replaced with silence, same duration)
             lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
             pos_ms += loop_dur
 
@@ -99,5 +87,5 @@ def generate_echo_lrc(
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-    print(f"  LRC written: {output_path} ({len(lines)} lines)")
+    logger.info(f"  LRC written: {output_path} ({len(lines)} lines)")
     return output_path
