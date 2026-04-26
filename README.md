@@ -14,16 +14,53 @@ The Echo Loop follows the **T-S-N-S-T-S** pattern:
 
 This structure uses the reflex energy of your native language to ignite comprehension of the target language — not through translation, but through resonance.
 
-## Two TTS Engines
+## Three TTS Engines
 
-The generator supports two TTS engines, selectable per run via config or CLI:
+The generator supports three TTS engines, selectable per run via config or CLI:
 
 | Engine | Cost | Strengths | Flag |
 |---|---|---|---|
-| **edge-tts** | Free | Fast, many voices/languages, concurrent generation | `--engine edge` |
+| **Google Cloud TTS** | Paid | Stable, high-quality Neural2 / Chirp3-HD voices, broad language coverage | `--engine google` |
+| **edge-tts** | Free | Many voices, no API key — but occasional 503s on long batches | `--engine edge` |
 | **OpenAI gpt-4o-mini-tts** | Paid | Reads math formulas naturally, semantic understanding, instruction-tunable | `--engine openai` |
 
-**edge-tts** is the default. Switch to OpenAI when your content includes mathematical expressions, technical notation, or anything that benefits from LLM-level reading comprehension.
+**Google Cloud TTS** is the default — most stable for long batch runs. Switch to OpenAI when your content includes math/technical notation, or to edge-tts when you don't want any cloud cost.
+
+### Google Cloud TTS Setup
+
+1. Install the SDK (already in `requirements.txt`):
+   ```bash
+   pip install google-cloud-texttospeech
+   ```
+
+2. Get a service account JSON key from the Google Cloud Console (project → IAM & Admin → Service Accounts → Keys → Add Key → JSON). The service account needs the **Cloud Text-to-Speech User** role.
+
+3. Save the file at the project root as `google-credentials.json` (already gitignored), then point the SDK at it:
+   ```bash
+   # In .env (loaded automatically via python-dotenv)
+   GOOGLE_APPLICATION_CREDENTIALS=./google-credentials.json
+   ```
+
+4. Default voices are configured in `config.yaml` under `tts.google`:
+   ```yaml
+   tts:
+     engine: "google"
+     google:
+       target_voice: "ja-JP-Neural2-B"          # Japanese male Neural2
+       native_voice: "cmn-CN-Chirp3-HD-Kore"    # Chinese female Chirp3-HD
+       speaking_rate: 1.0
+       pitch: 0.0                                # ignored by Chirp3-HD
+   ```
+
+5. CLI overrides:
+   ```bash
+   python main.py --text phrases.txt \
+       --engine google \
+       --google-voice cmn-CN-Chirp3-HD-Kore \
+       --google-target-voice ja-JP-Neural2-B
+   ```
+
+> **Note:** Chirp3-HD voices ignore the `pitch` parameter — set `pitch: 0.0` (the default) when using them. Neural2 / Wavenet / Standard voices accept pitch normally.
 
 ### OpenAI Engine Setup
 
@@ -192,11 +229,13 @@ In single-file modes, if omitted, defaults to `<input_stem>_echo.<format>` in th
 
 | Flag | Default | Description |
 |---|---|---|
-| `--engine {edge,openai}` | `edge` | TTS engine selection |
+| `--engine {google,edge,openai}` | `google` | TTS engine selection |
 | `--target-voice` | `ja-JP-NanamiNeural` | Target language voice (text-only mode, edge-tts) |
 | `--native-voice` | `zh-CN-XiaoxiaoNeural` | Native language voice (edge-tts) |
 | `--voice` | — | Alias for `--native-voice` (backward compatible) |
 | `--rate` | `+0%` | Speech rate (e.g., `+10%`, `-20%`) — edge-tts only |
+| `--google-voice` | `cmn-CN-Chirp3-HD-Kore` | Google native voice — google engine only |
+| `--google-target-voice` | `ja-JP-Neural2-B` | Google target voice — google engine only |
 | `--openai-voice` | `coral` | OpenAI TTS voice — openai engine only |
 | `--openai-instructions` | — | OpenAI TTS instructions prompt — openai engine only |
 
@@ -211,7 +250,7 @@ In single-file modes, if omitted, defaults to `<input_stem>_echo.<format>` in th
 
 | Flag | Default | Description |
 |---|---|---|
-| `--delimiter` | `-` | Delimiter between target and native text |
+| `--delimiter` | `\|\|\|` | Delimiter between target and native text. Older files using `-` can keep working by setting `delimiter: "-"` in config — but `\|\|\|` is far safer when content contains hyphens. |
 | `--split-strategy` | `last` | `first` or `last` delimiter occurrence |
 
 ---
@@ -263,15 +302,21 @@ timing:
   after_second_target: 1.2
 
 tts:
-  # Engine: "edge" (free) or "openai" (paid, reads math naturally)
-  # Requires OPENAI_API_KEY env var when engine is "openai".
-  engine: "edge"
+  # Engine: "google" (default), "edge" (free), or "openai" (math-aware)
+  engine: "google"
 
   # --- edge-tts settings ---
   target_voice: "ja-JP-NanamiNeural"
   native_voice: "zh-CN-XiaoxiaoNeural"
   rate: "+0%"
   pitch: "+0Hz"
+
+  # --- Google Cloud TTS settings (used when engine: "google") ---
+  google:
+    target_voice: "ja-JP-Neural2-B"
+    native_voice: "cmn-CN-Chirp3-HD-Kore"
+    speaking_rate: 1.0
+    pitch: 0.0
 
   # --- OpenAI TTS settings (used when engine: "openai") ---
   openai:
@@ -280,7 +325,7 @@ tts:
     speed: 1.0
     instructions: "用中文自然地朗读，数学表达式要读成口语形式，比如2ⁿ读作2的n次方"
 
-  # --- Volume control (applies to both engines) ---
+  # --- Volume control (applies to all engines) ---
   gain: -6              # fixed dB adjustment (0 = no change)
   normalize:            # target dBFS (e.g., -20). Overrides gain when set.
 
@@ -290,7 +335,7 @@ output:
   sample_rate: 44100
 
 lrc:
-  delimiter: "-"
+  delimiter: "|||"
   split_strategy: "last"
 ```
 
@@ -300,28 +345,30 @@ lrc:
 
 ### Text File Format
 
-One bilingual entry per line. Target text and native text separated by the delimiter (default `-`). Blank lines and `#` comments are ignored.
+One bilingual entry per line. Target text and native text separated by the delimiter (default `|||`). Blank lines and `#` comments are ignored.
 
 ```
 # Japanese → Chinese
-一度の接種でハシカのMMRワクチンについて-关于一次接种即可预防麻疹的MMR疫苗
-厚生労働省の専門家部会は了承しました-厚生劳动省的专家委员会已批准
+一度の接種でハシカのMMRワクチンについて|||关于一次接种即可预防麻疹的MMR疫苗
+厚生労働省の専門家部会は了承しました|||厚生劳动省的专家委员会已批准
 
 # English → Chinese
-The vaccine requires only one dose-该疫苗只需接种一次
+The vaccine requires only one dose|||该疫苗只需接种一次
 ```
 
 Format: `<target_text><delimiter><native_text>`
 
-The default split strategy `last` splits on the **last** occurrence of the delimiter, avoiding issues when the delimiter appears within the text itself.
+> **Why `|||`?** Earlier versions used `-`, but that breaks on content containing hyphens (e.g. `red-black tree`, `2-3 tree`, `state-of-the-art`) — the parser would split at the wrong dash and corrupt both target and native text. `|||` is essentially impossible to find in natural-language content, so the split is always clean.
+
+The default split strategy `last` splits on the **last** occurrence of the delimiter, avoiding issues when the delimiter happens to appear within the text itself.
 
 ### LRC File Format
 
 Standard LRC with bilingual content separated by the same delimiter:
 
 ```
-[00:00.39]一度の接種でハシカ...MMRワクチンについて-关于一次接种即可预防...的MMR疫苗
-[00:06.74]厚生労働省の専門家部会は...了承しました-厚生劳动省的专家委员会已批准...
+[00:00.39]一度の接種でハシカ...MMRワクチンについて|||关于一次接种即可预防...的MMR疫苗
+[00:06.74]厚生労働省の専門家部会は...了承しました|||厚生劳动省的专家委员会已批准...
 ```
 
 Format: `[mm:ss.xx]<target_text><delimiter><native_text>`
