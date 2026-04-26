@@ -14,9 +14,13 @@ Three modes:
 """
 
 import argparse
+import copy
+import logging
 import sys
 import tempfile
 import shutil
+import time
+import traceback
 from pathlib import Path
 
 import yaml
@@ -30,6 +34,16 @@ from audio.assembler import assemble_all_loops, EchoTiming
 from export.exporter import export_audio
 from export.lrc_writer import generate_echo_lrc
 from scanner.scanner import scan_folder, print_scan_summary, ScanItem
+
+from echo_logging import (
+    setup_logging,
+    attach_folder_log,
+    detach_folder_log,
+    close_all_handlers,
+    get_central_log_path,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def load_config(config_path: str | Path | None = None) -> dict:
@@ -82,20 +96,15 @@ def load_config(config_path: str | Path | None = None) -> dict:
         with open(config_path, "r", encoding="utf-8") as f:
             user_config = yaml.safe_load(f)
         if user_config:
-            # Top-level mode
             if "mode" in user_config:
                 defaults["mode"] = user_config["mode"] or ""
-            # Deep merge dict sections (except tts.openai which is nested)
-            for section in ("paths", "timing", "output", "lrc","loop"):
+            for section in ("paths", "timing", "output", "lrc", "loop"):
                 if section in user_config and isinstance(user_config[section], dict):
                     defaults[section].update(user_config[section])
-            # TTS section — merge top-level keys, then openai sub-dict
             if "tts" in user_config and isinstance(user_config["tts"], dict):
                 tts_user = user_config["tts"]
-                # Merge openai sub-dict separately
                 if "openai" in tts_user and isinstance(tts_user["openai"], dict):
                     defaults["tts"]["openai"].update(tts_user["openai"])
-                # Merge remaining tts keys (skip openai to avoid overwriting)
                 for k, v in tts_user.items():
                     if k != "openai":
                         defaults["tts"][k] = v
@@ -107,23 +116,19 @@ def load_config(config_path: str | Path | None = None) -> dict:
     elif "voice" in tts:
         tts.pop("voice")
 
-    # Ensure engine is valid
     if tts.get("engine") not in ("edge", "openai"):
         tts["engine"] = "edge"
 
-    # Ensure gain is numeric
     if tts.get("gain") is None:
         tts["gain"] = 0
     tts["gain"] = float(tts["gain"])
 
-    # Ensure normalize is float or None
     norm = tts.get("normalize")
     if norm is not None and norm != "":
         tts["normalize"] = float(norm)
     else:
         tts["normalize"] = None
 
-    # Ensure openai.speed is float
     tts["openai"]["speed"] = float(tts["openai"].get("speed", 1.0))
 
     return defaults
@@ -155,7 +160,6 @@ Modes:
         """,
     )
 
-    # --- Input sources ---
     input_group = parser.add_argument_group("Input")
     input_group.add_argument(
         "audio", nargs="?", default=None,
@@ -174,13 +178,11 @@ Modes:
         help="Folder to scan for batch processing",
     )
 
-    # --- Mode override ---
     parser.add_argument(
         "--mode", choices=["audio", "text"], default=None,
         help="Force mode (overrides config and auto-detection)",
     )
 
-    # --- Output paths ---
     output_group = parser.add_argument_group("Output paths")
     output_group.add_argument(
         "-o", "--output", default=None,
@@ -191,93 +193,44 @@ Modes:
         help="Output LRC file path (single-file mode only)",
     )
 
-    # --- Config ---
     parser.add_argument(
         "-c", "--config",
         default="config.yaml",
         help="Config file path (default: config.yaml)",
     )
 
-    # --- Timing overrides ---
     timing_group = parser.add_argument_group("Timing (overrides config)")
-    timing_group.add_argument(
-        "--after-first-target", type=float, default=None,
-        help="Silence after first target phrase (seconds)",
-    )
-    timing_group.add_argument(
-        "--after-native", type=float, default=None,
-        help="Silence after native phrase (seconds)",
-    )
-    timing_group.add_argument(
-        "--after-second-target", type=float, default=None,
-        help="Silence after second target phrase (seconds)",
-    )
+    timing_group.add_argument("--after-first-target", type=float, default=None)
+    timing_group.add_argument("--after-native", type=float, default=None)
+    timing_group.add_argument("--after-second-target", type=float, default=None)
 
     parser.add_argument(
         "--variant", choices=["full", "progressive", "shadow"], default=None,
-        help="Loop variant: full (T-S-N-S-T-S), progressive (full + shadow), shadow (no native audio)",
     )
 
-    # --- TTS overrides ---
     tts_group = parser.add_argument_group("TTS (overrides config)")
-    tts_group.add_argument(
-        "--engine", choices=["edge", "openai"], default=None,
-        help="TTS engine: 'edge' (free) or 'openai' (paid, reads math)",
-    )
-    tts_group.add_argument(
-        "--target-voice", default=None,
-        help="Target language TTS voice (text-only mode, edge-tts)",
-    )
-    tts_group.add_argument(
-        "--native-voice", default=None,
-        help="Native language TTS voice (edge-tts)",
-    )
-    tts_group.add_argument(
-        "--voice", default=None,
-        help="Alias for --native-voice (backward compatible)",
-    )
-    tts_group.add_argument(
-        "--rate", default=None,
-        help="TTS speech rate (e.g., +10%%, -20%%) — edge-tts only",
-    )
-    tts_group.add_argument(
-        "--gain", type=float, default=None,
-        help="TTS volume gain in dB (e.g., -6 to reduce, +3 to boost)",
-    )
-    tts_group.add_argument(
-        "--normalize", type=float, default=None,
-        help="Normalize TTS volume to target dBFS (e.g., -20). Overrides --gain",
-    )
-    tts_group.add_argument(
-        "--openai-voice", default=None,
-        help="OpenAI TTS voice (e.g., coral, nova, sage)",
-    )
-    tts_group.add_argument(
-        "--openai-instructions", default=None,
-        help="OpenAI TTS instructions prompt",
-    )
+    tts_group.add_argument("--engine", choices=["edge", "openai"], default=None)
+    tts_group.add_argument("--target-voice", default=None)
+    tts_group.add_argument("--native-voice", default=None)
+    tts_group.add_argument("--voice", default=None)
+    tts_group.add_argument("--rate", default=None)
+    tts_group.add_argument("--gain", type=float, default=None)
+    tts_group.add_argument("--normalize", type=float, default=None)
+    tts_group.add_argument("--openai-voice", default=None)
+    tts_group.add_argument("--openai-instructions", default=None)
 
-    # --- LRC overrides ---
     lrc_group = parser.add_argument_group("LRC / text parsing (overrides config)")
-    lrc_group.add_argument(
-        "--delimiter", default=None,
-        help="Delimiter between target and native text",
-    )
-    lrc_group.add_argument(
-        "--split-strategy", choices=["first", "last"], default=None,
-        help="Split on first or last delimiter occurrence",
-    )
+    lrc_group.add_argument("--delimiter", default=None)
+    lrc_group.add_argument("--split-strategy", choices=["first", "last"], default=None)
 
     return parser.parse_args()
 
 
 def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
     """Apply CLI argument overrides to config. CLI always wins."""
-    # Mode
     if args.mode:
         config["mode"] = args.mode
 
-    # Paths — CLI args override config paths
     if args.audio:
         config["paths"]["audio"] = args.audio
     if args.lrc:
@@ -291,7 +244,6 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
     if args.output_lrc:
         config["paths"]["output_lrc"] = args.output_lrc
 
-    # Timing
     if args.after_first_target is not None:
         config["timing"]["after_first_target"] = args.after_first_target
     if args.after_native is not None:
@@ -299,7 +251,6 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
     if args.after_second_target is not None:
         config["timing"]["after_second_target"] = args.after_second_target
 
-    # TTS
     if args.engine:
         config["tts"]["engine"] = args.engine
     if args.target_voice:
@@ -315,13 +266,11 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
     if args.normalize is not None:
         config["tts"]["normalize"] = args.normalize
 
-    # OpenAI TTS overrides
     if args.openai_voice:
         config["tts"]["openai"]["voice"] = args.openai_voice
     if args.openai_instructions:
         config["tts"]["openai"]["instructions"] = args.openai_instructions
 
-    # LRC
     if args.delimiter:
         config["lrc"]["delimiter"] = args.delimiter
     if args.split_strategy:
@@ -334,18 +283,9 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
 
 
 def resolve_mode(config: dict) -> str:
-    """
-    Determine which mode to run.
-
-    Priority:
-      0. If scan path is set → "batch"
-      1. Explicit mode flag (CLI --mode or config mode:)
-      2. Auto-detect from paths — if both audio+lrc and text exist, audio wins
-      3. Error if no paths are set at all
-    """
+    """Determine which mode to run."""
     paths = config["paths"]
 
-    # Batch mode check — scan path takes precedence
     if paths.get("scan"):
         return "batch"
 
@@ -355,22 +295,20 @@ def resolve_mode(config: dict) -> str:
 
     if mode in ("audio", "text"):
         if mode == "audio" and not has_audio:
-            print("Error: audio mode requires 'audio' and 'lrc' paths", file=sys.stderr)
+            logger.error("audio mode requires 'audio' and 'lrc' paths")
             sys.exit(1)
         if mode == "text" and not has_text:
-            print("Error: text mode requires 'text' path", file=sys.stderr)
+            logger.error("text mode requires 'text' path")
             sys.exit(1)
         return mode
 
-    # Auto-detect
     if has_audio:
         return "audio"
     if has_text:
         return "text"
 
-    print(
-        "Error: no input specified. Provide audio+lrc, --text, or --scan via CLI or config.yaml",
-        file=sys.stderr,
+    logger.error(
+        "no input specified. Provide audio+lrc, --text, or --scan via CLI or config.yaml"
     )
     sys.exit(1)
 
@@ -411,7 +349,6 @@ def resolve_output_paths_for_item(item: ScanItem, config: dict) -> tuple[Path, P
 
 
 def _volume_label(config: dict) -> str:
-    """Build a display label for the current volume settings."""
     norm = config["tts"]["normalize"]
     gain = config["tts"]["gain"]
     if norm is not None:
@@ -423,7 +360,6 @@ def _volume_label(config: dict) -> str:
 
 
 def _engine_label(config: dict) -> str:
-    """Build a display label for the current TTS engine."""
     engine = config["tts"]["engine"]
     if engine == "openai":
         oai = config["tts"]["openai"]
@@ -432,25 +368,39 @@ def _engine_label(config: dict) -> str:
 
 
 def progress_bar(current: int, total: int) -> None:
-    """Print a progress bar."""
-    bar_len = 30
-    filled = int(bar_len * current / total)
-    bar = "█" * filled + "░" * (bar_len - filled)
-    print(f"\r  [{bar}] {current}/{total}", end="", flush=True)
+    """
+    Render progress bar for tty (interactive); log decile checkpoints otherwise.
+
+    When stdout is redirected to a file (e.g. via `tee`), the \\r-overwriting
+    progress bar would produce hundreds of useless lines in the log. In that
+    case we degrade to ~10 INFO-level "Progress: N/M" entries instead.
+    """
+    if sys.stdout.isatty():
+        bar_len = 30
+        filled = int(bar_len * current / total)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        print(f"\r  [{bar}] {current}/{total}", end="", flush=True)
+        if current == total:
+            print()  # final newline so subsequent log lines start fresh
+    else:
+        # Non-interactive: log only when crossing each 10% boundary or at the end
+        prev_decile = (current - 1) * 10 // total if current > 0 else -1
+        curr_decile = current * 10 // total
+        if current == total or curr_decile > prev_decile:
+            logger.info(f"  Progress: {current}/{total}")
 
 
 def _print_segment_summary(segments: list) -> None:
-    """Print a short summary of parsed segments."""
-    print(f"  Found {len(segments)} segments")
+    """Log a short summary of parsed segments."""
+    logger.info(f"  Found {len(segments)} segments")
     for seg in segments[:3]:
-        print(f"    T: {seg.target_text[:40]}...")
-        print(f"    N: {seg.native_text[:40]}...")
+        logger.info(f"    T: {seg.target_text[:40]}...")
+        logger.info(f"    N: {seg.native_text[:40]}...")
     if len(segments) > 3:
-        print(f"    ... and {len(segments) - 3} more")
+        logger.info(f"    ... and {len(segments) - 3} more")
 
 
 def _tts_volume_kwargs(config: dict) -> dict:
-    """Extract volume keyword arguments from config for TTS functions."""
     return {
         "gain_db": config["tts"]["gain"],
         "normalize_target_dbfs": config["tts"]["normalize"],
@@ -458,7 +408,6 @@ def _tts_volume_kwargs(config: dict) -> dict:
 
 
 def _tts_engine_kwargs(config: dict) -> dict:
-    """Extract engine keyword arguments from config for TTS functions."""
     return {
         "engine": config["tts"]["engine"],
         "openai_config": config["tts"]["openai"],
@@ -472,11 +421,12 @@ def _assemble_and_export(
     """Assemble Echo Loops, export audio and LRC, clean up."""
     variant = config.get("loop", {}).get("variant", "full")
 
-    print("\n  Assembling Echo Loops...")
-    result = assemble_all_loops(target_audios, native_audios, timing, progress_bar, variant=variant)
-    print()
+    logger.info("  Assembling Echo Loops...")
+    result = assemble_all_loops(
+        target_audios, native_audios, timing, progress_bar, variant=variant,
+    )
 
-    print("\n  Exporting...")
+    logger.info("  Exporting...")
     export_audio(
         result,
         output_path,
@@ -492,7 +442,7 @@ def _assemble_and_export(
     )
 
     shutil.rmtree(work_dir, ignore_errors=True)
-    print(f"\n✓ Done! Echo Loop file saved to: {output_path}")
+    logger.info(f"✓ Done! Echo Loop file saved to: {output_path}")
 
 
 def run_audio_mode(config: dict) -> None:
@@ -510,66 +460,74 @@ def run_audio_mode(config: dict) -> None:
     vol_kwargs = _tts_volume_kwargs(config)
     eng_kwargs = _tts_engine_kwargs(config)
 
-    # Banner
-    print("=" * 60)
-    print("  Echo Loop Generator — Audio Mode")
-    print("  T → S → N → S → T → S")
-    print("=" * 60)
-    print(f"  Audio:      {audio_path}")
-    print(f"  LRC:        {lrc_path}")
-    print(f"  Output:     {output_path}")
-    print(f"  Output LRC: {lrc_output_path}")
-    print(f"  Timing:     {timing.after_first_target}s / "
-          f"{timing.after_native}s / {timing.after_second_target}s")
-    print(f"  TTS Engine: {_engine_label(config)}")
-    if config["tts"]["engine"] == "edge":
-        print(f"  Native TTS: {config['tts']['native_voice']}")
-    print(f"  TTS Volume: {_volume_label(config)}")
-    print(f"  Variant:  {config['loop']['variant']}")
-    print("=" * 60)
+    folder_log = attach_folder_log(audio_path.parent)
+    try:
+        logger.info("=" * 60)
+        logger.info("  Echo Loop Generator — Audio Mode")
+        logger.info("  T → S → N → S → T → S")
+        logger.info("=" * 60)
+        logger.info(f"  Audio:      {audio_path}")
+        logger.info(f"  LRC:        {lrc_path}")
+        logger.info(f"  Output:     {output_path}")
+        logger.info(f"  Output LRC: {lrc_output_path}")
+        logger.info(f"  Timing:     {timing.after_first_target}s / "
+                    f"{timing.after_native}s / {timing.after_second_target}s")
+        logger.info(f"  TTS Engine: {_engine_label(config)}")
+        if config["tts"]["engine"] == "edge":
+            logger.info(f"  Native TTS: {config['tts']['native_voice']}")
+        logger.info(f"  TTS Volume: {_volume_label(config)}")
+        logger.info(f"  Variant:    {config['loop']['variant']}")
+        if folder_log:
+            logger.info(f"  Folder log: {folder_log}")
+        central_log = get_central_log_path()
+        if central_log:
+            logger.info(f"  Central log: {central_log}")
+        logger.info("=" * 60)
 
-    # Step 1: Load source audio
-    print("\n[1/5] Loading source audio...")
-    source_audio = load_audio(audio_path)
-    audio_duration_ms = len(source_audio)
-    print(f"  Loaded: {audio_duration_ms / 1000:.1f}s, "
-          f"{source_audio.frame_rate}Hz, {source_audio.channels}ch")
+        start = time.monotonic()
 
-    # Step 2: Parse LRC
-    print("\n[2/5] Parsing LRC subtitles...")
-    segments = parse_lrc(
-        lrc_path,
-        delimiter=config["lrc"]["delimiter"],
-        split_strategy=config["lrc"]["split_strategy"],
-        audio_duration_ms=audio_duration_ms,
-    )
-    _print_segment_summary(segments)
+        logger.info("[1/5] Loading source audio...")
+        source_audio = load_audio(audio_path)
+        audio_duration_ms = len(source_audio)
+        logger.info(f"  Loaded: {audio_duration_ms / 1000:.1f}s, "
+                    f"{source_audio.frame_rate}Hz, {source_audio.channels}ch")
 
-    # Step 3: Extract target audio segments
-    print("\n[3/5] Extracting target audio segments...")
-    target_audios = extract_all_segments(source_audio, segments)
-    print(f"  Extracted {len(target_audios)} segments")
+        logger.info("[2/5] Parsing LRC subtitles...")
+        segments = parse_lrc(
+            lrc_path,
+            delimiter=config["lrc"]["delimiter"],
+            split_strategy=config["lrc"]["split_strategy"],
+            audio_duration_ms=audio_duration_ms,
+        )
+        _print_segment_summary(segments)
 
-    # Step 4: Generate native TTS
-    print("\n[4/5] Generating native TTS audio...")
-    work_dir = Path(tempfile.mkdtemp(prefix="echo_loop_"))
-    native_audios = generate_native_audio(
-        segments,
-        voice=config["tts"]["native_voice"],
-        rate=config["tts"]["rate"],
-        pitch=config["tts"]["pitch"],
-        work_dir=work_dir,
-        **vol_kwargs,
-        **eng_kwargs,
-    )
-    print(f"  Generated {len(native_audios)} TTS audio clips")
+        logger.info("[3/5] Extracting target audio segments...")
+        target_audios = extract_all_segments(source_audio, segments)
+        logger.info(f"  Extracted {len(target_audios)} segments")
 
-    # Step 5: Assemble and export
-    print("\n[5/5] Assembling and exporting...")
-    _assemble_and_export(
-        segments, target_audios, native_audios,
-        timing, config, output_path, lrc_output_path, work_dir,
-    )
+        logger.info("[4/5] Generating native TTS audio...")
+        work_dir = Path(tempfile.mkdtemp(prefix="echo_loop_"))
+        native_audios = generate_native_audio(
+            segments,
+            voice=config["tts"]["native_voice"],
+            rate=config["tts"]["rate"],
+            pitch=config["tts"]["pitch"],
+            work_dir=work_dir,
+            **vol_kwargs,
+            **eng_kwargs,
+        )
+        logger.info(f"  Generated {len(native_audios)} TTS audio clips")
+
+        logger.info("[5/5] Assembling and exporting...")
+        _assemble_and_export(
+            segments, target_audios, native_audios,
+            timing, config, output_path, lrc_output_path, work_dir,
+        )
+
+        elapsed = time.monotonic() - start
+        logger.info(f"  Total time: {elapsed:.1f}s")
+    finally:
+        detach_folder_log()
 
 
 def run_text_mode(config: dict) -> None:
@@ -586,66 +544,75 @@ def run_text_mode(config: dict) -> None:
     vol_kwargs = _tts_volume_kwargs(config)
     eng_kwargs = _tts_engine_kwargs(config)
 
-    # Banner
-    print("=" * 60)
-    print("  Echo Loop Generator — Text-Only Mode")
-    print("  T → S → N → S → T → S")
-    print("=" * 60)
-    print(f"  Text:       {text_path}")
-    print(f"  Output:     {output_path}")
-    print(f"  Output LRC: {lrc_output_path}")
-    print(f"  Timing:     {timing.after_first_target}s / "
-          f"{timing.after_native}s / {timing.after_second_target}s")
-    print(f"  TTS Engine: {_engine_label(config)}")
-    if config["tts"]["engine"] == "edge":
-        print(f"  Target TTS: {config['tts']['target_voice']}")
-        print(f"  Native TTS: {config['tts']['native_voice']}")
-    print(f"  TTS Volume: {_volume_label(config)}")
-    print("=" * 60)
+    folder_log = attach_folder_log(text_path.parent)
+    try:
+        logger.info("=" * 60)
+        logger.info("  Echo Loop Generator — Text-Only Mode")
+        logger.info("  T → S → N → S → T → S")
+        logger.info("=" * 60)
+        logger.info(f"  Text:       {text_path}")
+        logger.info(f"  Output:     {output_path}")
+        logger.info(f"  Output LRC: {lrc_output_path}")
+        logger.info(f"  Timing:     {timing.after_first_target}s / "
+                    f"{timing.after_native}s / {timing.after_second_target}s")
+        logger.info(f"  TTS Engine: {_engine_label(config)}")
+        if config["tts"]["engine"] == "edge":
+            logger.info(f"  Target TTS: {config['tts']['target_voice']}")
+            logger.info(f"  Native TTS: {config['tts']['native_voice']}")
+        logger.info(f"  TTS Volume: {_volume_label(config)}")
+        if folder_log:
+            logger.info(f"  Folder log: {folder_log}")
+        central_log = get_central_log_path()
+        if central_log:
+            logger.info(f"  Central log: {central_log}")
+        logger.info("=" * 60)
 
-    # Step 1: Parse text file
-    print("\n[1/4] Parsing text file...")
-    segments = parse_text(
-        text_path,
-        delimiter=config["lrc"]["delimiter"],
-        split_strategy=config["lrc"]["split_strategy"],
-    )
-    _print_segment_summary(segments)
+        start = time.monotonic()
 
-    work_dir = Path(tempfile.mkdtemp(prefix="echo_loop_"))
+        logger.info("[1/4] Parsing text file...")
+        segments = parse_text(
+            text_path,
+            delimiter=config["lrc"]["delimiter"],
+            split_strategy=config["lrc"]["split_strategy"],
+        )
+        _print_segment_summary(segments)
 
-    # Step 2: Generate target TTS
-    print("\n[2/4] Generating target TTS audio...")
-    target_audios = generate_target_audio(
-        segments,
-        voice=config["tts"]["target_voice"],
-        rate=config["tts"]["rate"],
-        pitch=config["tts"]["pitch"],
-        work_dir=work_dir,
-        **vol_kwargs,
-        **eng_kwargs,
-    )
-    print(f"  Generated {len(target_audios)} target TTS clips")
+        work_dir = Path(tempfile.mkdtemp(prefix="echo_loop_"))
 
-    # Step 3: Generate native TTS
-    print("\n[3/4] Generating native TTS audio...")
-    native_audios = generate_native_audio(
-        segments,
-        voice=config["tts"]["native_voice"],
-        rate=config["tts"]["rate"],
-        pitch=config["tts"]["pitch"],
-        work_dir=work_dir,
-        **vol_kwargs,
-        **eng_kwargs,
-    )
-    print(f"  Generated {len(native_audios)} native TTS clips")
+        logger.info("[2/4] Generating target TTS audio...")
+        target_audios = generate_target_audio(
+            segments,
+            voice=config["tts"]["target_voice"],
+            rate=config["tts"]["rate"],
+            pitch=config["tts"]["pitch"],
+            work_dir=work_dir,
+            **vol_kwargs,
+            **eng_kwargs,
+        )
+        logger.info(f"  Generated {len(target_audios)} target TTS clips")
 
-    # Step 4: Assemble and export
-    print("\n[4/4] Assembling and exporting...")
-    _assemble_and_export(
-        segments, target_audios, native_audios,
-        timing, config, output_path, lrc_output_path, work_dir,
-    )
+        logger.info("[3/4] Generating native TTS audio...")
+        native_audios = generate_native_audio(
+            segments,
+            voice=config["tts"]["native_voice"],
+            rate=config["tts"]["rate"],
+            pitch=config["tts"]["pitch"],
+            work_dir=work_dir,
+            **vol_kwargs,
+            **eng_kwargs,
+        )
+        logger.info(f"  Generated {len(native_audios)} native TTS clips")
+
+        logger.info("[4/4] Assembling and exporting...")
+        _assemble_and_export(
+            segments, target_audios, native_audios,
+            timing, config, output_path, lrc_output_path, work_dir,
+        )
+
+        elapsed = time.monotonic() - start
+        logger.info(f"  Total time: {elapsed:.1f}s")
+    finally:
+        detach_folder_log()
 
 
 def run_batch_mode(config: dict) -> None:
@@ -662,86 +629,116 @@ def run_batch_mode(config: dict) -> None:
         after_second_target=config["timing"]["after_second_target"],
     )
 
-    # Banner
-    print("=" * 60)
-    print("  Echo Loop Generator — Batch Mode")
-    print("  T → S → N → S → T → S")
-    print("=" * 60)
-    print(f"  Scan folder: {scan_path}")
-    if mode_filter:
-        print(f"  Filter:      {mode_filter} only")
-    else:
-        print(f"  Filter:      auto (audio pairs + text files)")
-    print(f"  Timing:      {timing.after_first_target}s / "
-          f"{timing.after_native}s / {timing.after_second_target}s")
-    print(f"  TTS Engine:  {_engine_label(config)}")
-    if config["tts"]["engine"] == "edge":
-        print(f"  Native TTS:  {config['tts']['native_voice']}")
-        if mode_filter in ("", "text"):
-            print(f"  Target TTS:  {config['tts']['target_voice']}")
-    print(f"  TTS Volume:  {_volume_label(config)}")
-    print("=" * 60)
+    folder_log = attach_folder_log(scan_path)
+    try:
+        logger.info("=" * 60)
+        logger.info("  Echo Loop Generator — Batch Mode")
+        logger.info("  T → S → N → S → T → S")
+        logger.info("=" * 60)
+        logger.info(f"  Scan folder: {scan_path}")
+        if mode_filter:
+            logger.info(f"  Filter:      {mode_filter} only")
+        else:
+            logger.info(f"  Filter:      auto (audio pairs + text files)")
+        logger.info(f"  Timing:      {timing.after_first_target}s / "
+                    f"{timing.after_native}s / {timing.after_second_target}s")
+        logger.info(f"  TTS Engine:  {_engine_label(config)}")
+        if config["tts"]["engine"] == "edge":
+            logger.info(f"  Native TTS:  {config['tts']['native_voice']}")
+            if mode_filter in ("", "text"):
+                logger.info(f"  Target TTS:  {config['tts']['target_voice']}")
+        logger.info(f"  TTS Volume:  {_volume_label(config)}")
+        if folder_log:
+            logger.info(f"  Folder log:  {folder_log}")
+        central_log = get_central_log_path()
+        if central_log:
+            logger.info(f"  Central log: {central_log}")
+        logger.info("=" * 60)
 
-    # Scan
-    print("\n  Scanning folder...")
-    items = scan_folder(scan_path, mode=mode_filter)
-    print_scan_summary(items)
+        batch_start = time.monotonic()
 
-    if not items:
-        print("\n  Nothing to process.")
-        return
+        logger.info("  Scanning folder...")
+        items = scan_folder(scan_path, mode=mode_filter)
+        print_scan_summary(items)
 
-    # Process each item
-    succeeded: list[str] = []
-    skipped: list[str] = []
-    failed: list[tuple[str, str]] = []
-    total = len(items)
+        if not items:
+            logger.info("  Nothing to process.")
+            return
 
-    for idx, item in enumerate(items, 1):
-        label = item.label
-        print(f"\n{'─' * 60}")
-        print(f"  [{idx}/{total}] {label}")
-        print(f"{'─' * 60}")
+        succeeded: list[str] = []
+        skipped: list[str] = []
+        failed: list[tuple[str, str]] = []
+        total = len(items)
 
-        # Skip if echo output already exists
-        output_path, lrc_output_path = resolve_output_paths_for_item(item, config)
-        if output_path.exists() and lrc_output_path.exists():
-            print(f"  ⏭  Skipped (already exists): {output_path.name}, {lrc_output_path.name}")
-            skipped.append(label)
-            continue
+        for idx, item in enumerate(items, 1):
+            label = item.label
+            logger.info("─" * 60)
+            logger.info(f"  [{idx}/{total}] {label}")
+            logger.info("─" * 60)
 
-        try:
-            item_config = _config_for_item(config, item)
+            output_path, lrc_output_path = resolve_output_paths_for_item(item, config)
+            if output_path.exists() and lrc_output_path.exists():
+                logger.info(
+                    f"  ⏭  Skipped (already exists): "
+                    f"{output_path.name}, {lrc_output_path.name}"
+                )
+                skipped.append(label)
+                continue
 
-            if item.mode == "audio":
-                _run_single_audio(item_config, item, timing, output_path, lrc_output_path)
-            else:
-                _run_single_text(item_config, item, timing, output_path, lrc_output_path)
+            item_start = time.monotonic()
+            try:
+                item_config = _config_for_item(config, item)
 
-            succeeded.append(label)
+                if item.mode == "audio":
+                    _run_single_audio(
+                        item_config, item, timing, output_path, lrc_output_path,
+                    )
+                else:
+                    _run_single_text(
+                        item_config, item, timing, output_path, lrc_output_path,
+                    )
 
-        except Exception as e:
-            failed.append((label, str(e)))
-            print(f"\n  ✗ Failed: {e}")
+                succeeded.append(label)
+                elapsed = time.monotonic() - item_start
+                logger.info(f"  ✓ Item completed in {elapsed:.1f}s")
 
-    # Summary
-    print(f"\n{'=' * 60}")
-    print(f"  Batch Complete")
-    print(f"{'=' * 60}")
-    print(f"  ✓ Succeeded: {len(succeeded)}")
-    if skipped:
-        print(f"  ⏭  Skipped:   {len(skipped)}")
-    if failed:
-        print(f"  ✗ Failed:    {len(failed)}")
-        for name, error in failed:
-            short_err = error if len(error) <= 80 else error[:77] + "..."
-            print(f"    - {name}: {short_err}")
-    print(f"{'=' * 60}")
+            except Exception as e:
+                elapsed = time.monotonic() - item_start
+                full_tb = traceback.format_exc()
+                short_err = str(e) if len(str(e)) <= 80 else str(e)[:77] + "..."
+                # Console + log file get the short version
+                logger.error(
+                    f"  ✗ Failed: {label} — {short_err} (after {elapsed:.1f}s)"
+                )
+                # Full traceback only goes to log files (DEBUG level), not console
+                logger.debug(f"Full traceback for {label}:\n{full_tb}")
+                failed.append((label, full_tb))
+
+        total_elapsed = time.monotonic() - batch_start
+
+        logger.info("=" * 60)
+        logger.info("  Batch Complete")
+        logger.info("=" * 60)
+        logger.info(f"  ✓ Succeeded: {len(succeeded)}")
+        if skipped:
+            logger.info(f"  ⏭  Skipped:   {len(skipped)}")
+        if failed:
+            logger.error(f"  ✗ Failed:    {len(failed)}")
+            for name, tb in failed:
+                # First line of traceback's final line is usually the exception summary
+                short = tb.strip().splitlines()[-1] if tb.strip() else "(no detail)"
+                if len(short) > 100:
+                    short = short[:97] + "..."
+                logger.error(f"    - {name}: {short}")
+            logger.info("  (full tracebacks recorded in log files)")
+        logger.info(f"  Total time:  {total_elapsed:.1f}s")
+        logger.info("=" * 60)
+    finally:
+        detach_folder_log()
 
 
 def _config_for_item(config: dict, item: ScanItem) -> dict:
     """Create a config copy with paths set for a specific batch item."""
-    import copy
     c = copy.deepcopy(config)
     c["paths"]["scan"] = ""
 
@@ -774,13 +771,13 @@ def _run_single_audio(
     vol_kwargs = _tts_volume_kwargs(config)
     eng_kwargs = _tts_engine_kwargs(config)
 
-    print(f"  Audio: {audio_path.name}")
-    print(f"  LRC:   {lrc_path.name}")
-    print(f"  →      {output_path.name}")
+    logger.info(f"  Audio: {audio_path.name}")
+    logger.info(f"  LRC:   {lrc_path.name}")
+    logger.info(f"  →      {output_path.name}")
 
     source_audio = load_audio(audio_path)
     audio_duration_ms = len(source_audio)
-    print(f"  Loaded: {audio_duration_ms / 1000:.1f}s")
+    logger.info(f"  Loaded: {audio_duration_ms / 1000:.1f}s")
 
     segments = parse_lrc(
         lrc_path,
@@ -788,7 +785,7 @@ def _run_single_audio(
         split_strategy=config["lrc"]["split_strategy"],
         audio_duration_ms=audio_duration_ms,
     )
-    print(f"  Segments: {len(segments)}")
+    logger.info(f"  Segments: {len(segments)}")
 
     target_audios = extract_all_segments(source_audio, segments)
 
@@ -822,15 +819,15 @@ def _run_single_text(
     vol_kwargs = _tts_volume_kwargs(config)
     eng_kwargs = _tts_engine_kwargs(config)
 
-    print(f"  Text: {text_path.name}")
-    print(f"  →     {output_path.name}")
+    logger.info(f"  Text: {text_path.name}")
+    logger.info(f"  →     {output_path.name}")
 
     segments = parse_text(
         text_path,
         delimiter=config["lrc"]["delimiter"],
         split_strategy=config["lrc"]["split_strategy"],
     )
-    print(f"  Segments: {len(segments)}")
+    logger.info(f"  Segments: {len(segments)}")
 
     work_dir = Path(tempfile.mkdtemp(prefix="echo_batch_"))
 
@@ -861,20 +858,32 @@ def _run_single_text(
 
 
 def main():
-    load_dotenv()  # load .env file (OPENAI_API_KEY, etc.)
+    load_dotenv()  # OPENAI_API_KEY etc.
 
     args = parse_args()
     config = load_config(args.config)
     config = apply_cli_overrides(config, args)
 
-    mode = resolve_mode(config)
+    setup_logging()
 
-    if mode == "batch":
-        run_batch_mode(config)
-    elif mode == "text":
-        run_text_mode(config)
-    else:
-        run_audio_mode(config)
+    try:
+        mode = resolve_mode(config)
+
+        if mode == "batch":
+            run_batch_mode(config)
+        elif mode == "text":
+            run_text_mode(config)
+        else:
+            run_audio_mode(config)
+    except SystemExit:
+        # resolve_mode and similar call sys.exit(); don't treat as crash
+        raise
+    except Exception:
+        # Anything else is a real crash — record full traceback to log files
+        logger.exception("Unhandled exception in main")
+        raise
+    finally:
+        close_all_handlers()
 
 
 if __name__ == "__main__":

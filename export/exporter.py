@@ -5,11 +5,15 @@ Exports the assembled Echo Loop audio to the desired output format (m4a by defau
 Uses pydub with ffmpeg backend for format conversion.
 """
 
+import logging
 import subprocess
 import tempfile
 from pathlib import Path
 
 from pydub import AudioSegment
+
+
+logger = logging.getLogger(__name__)
 
 
 def export_audio(
@@ -19,28 +23,13 @@ def export_audio(
     bitrate: str = "192k",
     sample_rate: int = 44100,
 ) -> Path:
-    """
-    Export an AudioSegment to the specified format.
-    
-    Args:
-        audio: The AudioSegment to export
-        output_path: Output file path
-        format: Output format (m4a, mp3, wav, etc.)
-        bitrate: Audio bitrate
-        sample_rate: Sample rate in Hz
-        
-    Returns:
-        Path to the exported file
-    """
+    """Export an AudioSegment to the specified format."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Normalize audio to consistent sample rate
     audio = audio.set_frame_rate(sample_rate)
 
     if format == "m4a":
-        # m4a requires special handling: export wav first, then convert via ffmpeg
-        # ffmpeg uses "ipod" muxer for m4a format
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_wav = tmp.name
         audio.export(tmp_wav, format="wav")
@@ -60,19 +49,29 @@ def export_audio(
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg m4a export failed:\n{result.stderr}")
     else:
-        # For other formats, pydub handles it directly
         export_params = {
             "format": format,
             "bitrate": bitrate,
         }
         audio.export(str(output_path), **export_params)
 
+    # Sanity check: file should exist and be non-trivial in size
+    if not output_path.exists():
+        raise RuntimeError(
+            f"Export claimed success but output file is missing: {output_path}"
+        )
+
     file_size = output_path.stat().st_size
+    if file_size < 1024:
+        raise RuntimeError(
+            f"Exported file is suspiciously small ({file_size} bytes): {output_path}"
+        )
+
     duration_sec = len(audio) / 1000.0
 
-    print(f"  Exported: {output_path}")
-    print(f"  Duration: {_format_duration(duration_sec)}")
-    print(f"  Size: {_format_size(file_size)}")
+    logger.info(f"  Exported: {output_path}")
+    logger.info(f"  Duration: {_format_duration(duration_sec)}")
+    logger.info(f"  Size: {_format_size(file_size)}")
 
     return output_path
 

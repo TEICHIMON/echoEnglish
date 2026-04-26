@@ -7,6 +7,7 @@ Engine is selected via config: "edge" (free) or "openai" (paid, supports math).
 """
 
 import asyncio
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -17,13 +18,49 @@ from pydub import AudioSegment
 from parser.lrc_parser import Segment
 
 
+logger = logging.getLogger(__name__)
+
+
 # ---------------------------------------------------------------------------
 # Retry / concurrency settings for edge-tts
 # ---------------------------------------------------------------------------
 
 EDGE_CONCURRENCY = 3        # max parallel requests (lower = less 503s)
-EDGE_MAX_RETRIES = 3        # retry attempts per TTS call
+EDGE_MAX_RETRIES = 4        # retry attempts per TTS call
 EDGE_RETRY_BASE_DELAY = 2.0 # seconds; doubles each retry (exponential backoff)
+
+
+# Substrings in the exception message that indicate a transient failure
+# worth retrying. Match any of these and we back off and try again.
+TRANSIENT_ERROR_INDICATORS: tuple[tuple[str, str], ...] = (
+    # HTTP-level transients
+    ("503", "503"),
+    ("Invalid response status", "bad-status"),
+    # Connection / DNS errors (typical aiohttp / OSError messages)
+    ("Cannot connect to host", "connect"),
+    ("nodename nor servname", "dns"),                  # macOS / BSD
+    ("Name or service not known", "dns"),              # Linux
+    ("Temporary failure in name resolution", "dns"),   # Linux
+    ("Connection reset", "reset"),
+    ("Connection refused", "refused"),
+    ("Connection aborted", "aborted"),
+    ("ServerDisconnected", "disconnected"),
+    ("TimeoutError", "timeout"),
+    ("ClientConnectorError", "connect"),
+    ("ConnectionError", "connect"),
+)
+
+
+def _classify_transient(err_str: str) -> str | None:
+    """
+    If the error string matches a known transient pattern, return a short
+    label describing the kind of failure ('dns', 'connect', '503', ...).
+    Returns None if the error is not retryable.
+    """
+    for needle, label in TRANSIENT_ERROR_INDICATORS:
+        if needle in err_str:
+            return label
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -35,14 +72,7 @@ def _adjust_volume(
     gain_db: float = 0.0,
     normalize_target_dbfs: float | None = None,
 ) -> AudioSegment:
-    """
-    Adjust the volume of an AudioSegment.
-
-    Two modes (normalize takes priority if both are set):
-      1. normalize_target_dbfs: normalize the clip so its average loudness
-         (dBFS) matches the target value.
-      2. gain_db: apply a fixed gain in dB.
-    """
+    """Adjust the volume of an AudioSegment."""
     if normalize_target_dbfs is not None:
         current_dbfs = audio.dBFS
         if current_dbfs > -60.0:
@@ -79,7 +109,7 @@ async def _edge_generate_batch(
     pitch: str,
     prefix: str,
 ) -> list[Path]:
-    """Generate TTS audio for multiple texts via edge-tts with retry on 503."""
+    """Generate TTS audio for multiple texts via edge-tts with retry on transient errors."""
     output_paths: list[Path] = []
     for i in range(len(texts)):
         output_paths.append(output_dir / f"{prefix}_{i:04d}.mp3")
@@ -87,7 +117,7 @@ async def _edge_generate_batch(
     semaphore = asyncio.Semaphore(EDGE_CONCURRENCY)
 
     async def _generate_with_retry(text: str, out_path: str):
-        """Run a single TTS call with concurrency limit and exponential-backoff retry."""
+        """Run a single TTS call with concurrency limit + exponential-backoff retry."""
         async with semaphore:
             for attempt in range(1, EDGE_MAX_RETRIES + 1):
                 try:
@@ -95,15 +125,23 @@ async def _edge_generate_batch(
                     return
                 except Exception as e:
                     err_str = str(e)
-                    is_transient = ("503" in err_str or "Invalid response status" in err_str)
-                    if is_transient and attempt < EDGE_MAX_RETRIES:
+                    err_label = _classify_transient(err_str)
+
+                    if err_label and attempt < EDGE_MAX_RETRIES:
                         delay = EDGE_RETRY_BASE_DELAY * (2 ** (attempt - 1))
                         short_text = text[:30].replace("\n", " ")
-                        print(f"  ⟳ Retry {attempt}/{EDGE_MAX_RETRIES} in {delay:.0f}s "
-                              f"(503) for '{short_text}...'")
+                        logger.warning(
+                            f"⟳ Retry {attempt}/{EDGE_MAX_RETRIES} in {delay:.0f}s "
+                            f"({err_label}) for '{short_text}...'"
+                        )
                         await asyncio.sleep(delay)
                     else:
-                        print(f"  Warning: edge-tts generation failed: {e}")
+                        # Either non-retryable, or we've exhausted retries
+                        kind = err_label or "non-retryable"
+                        logger.warning(
+                            f"edge-tts generation failed [{kind}, "
+                            f"attempt {attempt}/{EDGE_MAX_RETRIES}]: {e}"
+                        )
                         return
 
     tasks = [
@@ -203,7 +241,7 @@ def _run_openai_batch(
                 client, text, out_path, model, voice, instructions, speed,
             )
         except Exception as e:
-            print(f"  Warning: OpenAI TTS failed for '{text[:30]}...': {e}")
+            logger.warning(f"OpenAI TTS failed for '{text[:30]}...': {e}")
 
     return _load_audio_files(output_paths, texts, gain_db, normalize_target_dbfs)
 
@@ -218,16 +256,40 @@ def _load_audio_files(
     gain_db: float,
     normalize_target_dbfs: float | None,
 ) -> list[AudioSegment]:
-    """Load generated mp3 files into AudioSegments with volume adjustment."""
+    """Load generated mp3 files into AudioSegments with volume adjustment.
+
+    Tracks how many clips fell back to silence due to TTS failure and
+    emits a single summary warning at the end if any did. Without this
+    summary, individual per-clip warnings can scroll past unnoticed
+    while the final m4a still appears to "succeed" (just with silent gaps).
+    """
     audios = []
+    fallback_indices: list[int] = []
+
     for i, path in enumerate(paths):
         if path.exists() and path.stat().st_size > 0:
             audio = AudioSegment.from_file(str(path), format="mp3")
             audio = _adjust_volume(audio, gain_db, normalize_target_dbfs)
             audios.append(audio)
         else:
-            print(f"  Warning: TTS failed for '{texts[i][:30]}...', using silence")
+            logger.warning(
+                f"TTS failed for '{texts[i][:30]}...', using silence"
+            )
             audios.append(AudioSegment.silent(duration=500))
+            fallback_indices.append(i)
+
+    if fallback_indices:
+        # End-of-batch summary so silent gaps in the output don't go unnoticed
+        n = len(fallback_indices)
+        total = len(paths)
+        idx_preview = ", ".join(str(i) for i in fallback_indices[:8])
+        if n > 8:
+            idx_preview += f", ... ({n - 8} more)"
+        logger.warning(
+            f"⚠ {n}/{total} TTS clips fell back to silence "
+            f"(segment indices: {idx_preview}). "
+            f"The output audio will have silent gaps at these positions."
+        )
     return audios
 
 
@@ -246,23 +308,7 @@ def generate_native_audio(
     engine: str = "edge",
     openai_config: dict | None = None,
 ) -> list[AudioSegment]:
-    """
-    Generate native language TTS audio for all segments.
-
-    Args:
-        segments: Segment objects with native_text
-        voice: edge-tts voice name (ignored when engine="openai")
-        rate: Speech rate adjustment (edge-tts only)
-        pitch: Pitch adjustment (edge-tts only)
-        work_dir: Directory for temp files
-        gain_db: Fixed dB gain to apply
-        normalize_target_dbfs: Normalize to this dBFS level
-        engine: "edge" or "openai"
-        openai_config: OpenAI engine settings dict
-
-    Returns:
-        List of AudioSegment objects
-    """
+    """Generate native language TTS audio for all segments."""
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="echo_tts_"))
     else:
@@ -294,25 +340,7 @@ def generate_target_audio(
     engine: str = "edge",
     openai_config: dict | None = None,
 ) -> list[AudioSegment]:
-    """
-    Generate target language TTS audio for all segments.
-
-    Used in text-only mode where no source audio file is provided.
-
-    Args:
-        segments: Segment objects with target_text
-        voice: edge-tts voice name (ignored when engine="openai")
-        rate: Speech rate adjustment (edge-tts only)
-        pitch: Pitch adjustment (edge-tts only)
-        work_dir: Directory for temp files
-        gain_db: Fixed dB gain to apply
-        normalize_target_dbfs: Normalize to this dBFS level
-        engine: "edge" or "openai"
-        openai_config: OpenAI engine settings dict
-
-    Returns:
-        List of AudioSegment objects
-    """
+    """Generate target language TTS audio for all segments."""
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="echo_tts_"))
     else:
