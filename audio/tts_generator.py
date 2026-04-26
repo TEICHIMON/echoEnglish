@@ -10,6 +10,8 @@ Engine is selected via config: "edge", "openai", or "google".
 import asyncio
 import logging
 import os
+import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -335,6 +337,131 @@ def _google_generate_single(
         f.write(response.audio_content)
 
 
+# Google's per-request "sentence too long" rejection. Chinese clauses joined by
+# 中文逗号 are treated as one sentence by Google, so a long passage like
+# "地球虽然有六大洲，但当时像是一块大陆，海洋比例仅约三分之一，..." trips this
+# 400 even though it has plenty of natural break points.
+_GOOGLE_TOO_LONG_INDICATORS: tuple[str, ...] = (
+    "sentences that are too long",
+    "is too long",
+)
+
+# Strong (sentence-ending) and weak (clause-pause) punctuation in both Chinese
+# and Western forms. Keeping the punctuation attached preserves prosody.
+_TTS_STRONG_PUNCT = r"[。！？!?\.;；\n]+"
+_TTS_WEAK_PUNCT = r"[，、,]+"
+
+
+def _is_too_long_error(err_str: str) -> bool:
+    return any(s in err_str for s in _GOOGLE_TOO_LONG_INDICATORS)
+
+
+def _split_on_punct(text: str, pattern: str) -> list[str]:
+    """Split text on a punctuation regex, keeping the punctuation attached
+    to the preceding chunk."""
+    pieces = re.split(f"({pattern})", text)
+    chunks: list[str] = []
+    buf = ""
+    for piece in pieces:
+        if not piece:
+            continue
+        buf += piece
+        if re.fullmatch(pattern, piece):
+            chunks.append(buf)
+            buf = ""
+    if buf:
+        chunks.append(buf)
+    return [c.strip() for c in chunks if c.strip()]
+
+
+def _split_long_text(text: str, target_chars: int = 80) -> list[str]:
+    """Split a too-long text into TTS-friendly pieces.
+
+    Splits on sentence-ending punctuation first, then sub-splits any chunk
+    that's still over target_chars on clause-pause punctuation. Adjacent
+    pieces are bundled back together up to target_chars to avoid choppy
+    prosody from over-fragmenting.
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    strong = _split_on_punct(text, _TTS_STRONG_PUNCT)
+    if not strong:
+        strong = [text]
+
+    pieces: list[str] = []
+    for chunk in strong:
+        if len(chunk) <= target_chars:
+            pieces.append(chunk)
+            continue
+        weak = _split_on_punct(chunk, _TTS_WEAK_PUNCT)
+        if len(weak) <= 1:
+            # No internal punctuation to split on — hard-cut as a last resort.
+            pieces.extend(
+                chunk[i : i + target_chars]
+                for i in range(0, len(chunk), target_chars)
+            )
+        else:
+            pieces.extend(weak)
+
+    # Bundle adjacent small pieces up to target_chars so we don't synthesize
+    # one-clause stubs.
+    bundled: list[str] = []
+    current = ""
+    for p in pieces:
+        if not current:
+            current = p
+        elif len(current) + len(p) <= target_chars:
+            current += p
+        else:
+            bundled.append(current)
+            current = p
+    if current:
+        bundled.append(current)
+    return bundled
+
+
+def _google_generate_with_split(
+    client,
+    text: str,
+    output_path: Path,
+    voice_name: str,
+    speaking_rate: float,
+    pitch: float,
+) -> int:
+    """Synthesize a too-long text by splitting it on punctuation, generating
+    each chunk separately, and concatenating the result into output_path.
+
+    Returns the number of chunks synthesized. Raises if splitting can't
+    produce more than one chunk (caller should treat as non-recoverable).
+    """
+    chunks = _split_long_text(text)
+    if len(chunks) <= 1:
+        raise RuntimeError(
+            "text could not be split into smaller chunks for TTS"
+        )
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="echo_tts_split_"))
+    try:
+        chunk_paths: list[Path] = []
+        for i, chunk in enumerate(chunks):
+            cp = tmp_dir / f"chunk_{i:03d}.mp3"
+            _google_generate_single(
+                client, chunk, cp, voice_name, speaking_rate, pitch,
+            )
+            chunk_paths.append(cp)
+
+        combined = AudioSegment.empty()
+        for cp in chunk_paths:
+            combined += AudioSegment.from_file(str(cp), format="mp3")
+        combined.export(str(output_path), format="mp3")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return len(chunks)
+
+
 def _run_google_batch(
     texts: list[str],
     work_dir: Path,
@@ -374,6 +501,30 @@ def _run_google_batch(
                 return
             except Exception as e:
                 err_str = str(e)
+
+                # "Sentence too long" is non-retryable as-is, but recoverable
+                # by splitting the text on punctuation and synthesizing each
+                # piece separately. Without this branch, a single overlong
+                # clause would silently turn into a gap in the output.
+                if _is_too_long_error(err_str):
+                    try:
+                        n_chunks = _google_generate_with_split(
+                            client, text, out_path,
+                            voice_name, speaking_rate, pitch,
+                        )
+                        short_text = text[:30].replace("\n", " ")
+                        logger.info(
+                            f"Google TTS split long text into {n_chunks} chunks "
+                            f"for '{short_text}...'"
+                        )
+                        return
+                    except Exception as split_err:
+                        logger.warning(
+                            f"Google TTS split fallback failed for "
+                            f"'{text[:30]}...': {split_err}"
+                        )
+                        return
+
                 # Reuse the shared transient classifier; also catch Google's
                 # gRPC quota / unavailable codes that aren't in the table.
                 err_label = _classify_transient(err_str)
