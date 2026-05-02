@@ -147,6 +147,7 @@ lessons/
 
 - Python 3.10+
 - ffmpeg (for m4a export)
+- ffprobe (for the optional transcription API; usually installed with ffmpeg)
 - Internet connection (for edge-tts or OpenAI API)
 
 ## Installation
@@ -154,6 +155,53 @@ lessons/
 ```bash
 pip install -r requirements.txt
 ```
+
+## Optional Transcription API
+
+`transcription_server.py` adds a FastAPI service that accepts uploaded audio,
+transcribes it with faster-whisper + Silero VAD, streams progress over SSE, and
+returns generated LRC text.
+
+Run it:
+
+```bash
+uvicorn transcription_server:app --host 0.0.0.0 --port 8000
+```
+
+Submit a job:
+
+```bash
+curl -F "audio=@lesson01.mp3" -F "lang=ja" http://localhost:8000/jobs
+```
+
+Watch progress:
+
+```bash
+curl -N http://localhost:8000/jobs/<job_id>/events
+```
+
+Fetch the LRC result:
+
+```bash
+curl http://localhost:8000/jobs/<job_id>/result
+```
+
+Supported transcription models:
+
+| Language | Model form value | faster-whisper repo |
+|---|---|---|
+| `en` | `default` / `large-v3-turbo` | `Systran/faster-whisper-large-v3-turbo` |
+| `en` | `large-v3` | `Systran/faster-whisper-large-v3` |
+| `ja` | `default` | `kotoba-tech/kotoba-whisper-v2.0-faster` |
+
+Environment overrides:
+
+| Variable | Default |
+|---|---|
+| `TRANSCRIBE_DEVICE` | `cuda` |
+| `TRANSCRIBE_COMPUTE_TYPE` | `int8_float16` |
+| `TRANSCRIBE_IDLE_RELEASE_SECONDS` | `600` |
+| `TRANSCRIBE_JOB_RETENTION_SECONDS` | `3600` |
 
 ## Quick Start
 

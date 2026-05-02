@@ -2,15 +2,15 @@
 """
 视频音频提取工具
 
-扫描指定文件夹下的所有视频文件，用 ffmpeg 提取音频并转为 m4a 格式，
-输出到同一文件夹中。如果同名 .m4a 已存在则跳过。
+扫描指定文件夹下的所有视频文件，用 ffmpeg 提取音频并转为 mp3 格式，
+输出到同一文件夹中。如果同名 .mp3 已存在则跳过。
 
 用法:
-    python extract_audio.py /path/to/videos
-    python extract_audio.py /path/to/videos --bitrate 256k
-    python extract_audio.py /path/to/videos --sample-rate 48000
-    python extract_audio.py /path/to/videos --overwrite
-    python extract_audio.py /path/to/videos --split-threshold 900 --chunk-duration 600
+    python extract_audio_mp3.py /path/to/videos
+    python extract_audio_mp3.py /path/to/videos --bitrate 256k
+    python extract_audio_mp3.py /path/to/videos --sample-rate 48000
+    python extract_audio_mp3.py /path/to/videos --overwrite
+    python extract_audio_mp3.py /path/to/videos --split-threshold 900 --chunk-duration 600
 """
 
 import argparse
@@ -64,12 +64,12 @@ def _print_ffmpeg_error(label: str, stderr: str) -> None:
 
 
 def _run_ffmpeg_extract(
-    video: Path,
-    output: Path,
-    bitrate: str,
-    sample_rate: int,
-    start: float | None = None,
-    duration: float | None = None,
+        video: Path,
+        output: Path,
+        bitrate: str,
+        sample_rate: int,
+        start: float | None = None,
+        duration: float | None = None,
 ) -> bool:
     """运行单条 ffmpeg 提取命令。返回是否成功。"""
     cmd = ["ffmpeg", "-y"]
@@ -80,10 +80,10 @@ def _run_ffmpeg_extract(
         cmd += ["-t", f"{duration:.3f}"]
     cmd += [
         "-vn",
-        "-acodec", "aac",
+        "-acodec", "libmp3lame",  # 使用 MP3 编码器
         "-b:a", bitrate,
         "-ar", str(sample_rate),
-        "-f", "ipod",
+        "-f", "mp3",  # 指定输出格式为 mp3
         str(output),
     ]
 
@@ -95,23 +95,23 @@ def _run_ffmpeg_extract(
 
 
 def extract_audio(
-    video: Path,
-    bitrate: str = "192k",
-    sample_rate: int = 44100,
-    overwrite: bool = False,
-    split_threshold: float = 900.0,
-    chunk_duration: float = 600.0,
+        video: Path,
+        bitrate: str = "192k",
+        sample_rate: int = 44100,
+        overwrite: bool = False,
+        split_threshold: float = 900.0,
+        chunk_duration: float = 600.0,
 ) -> tuple[str, list[Path]]:
     """
-    用 ffmpeg 从单个视频文件中提取音频，输出为 .m4a。
+    用 ffmpeg 从单个视频文件中提取音频，输出为 .mp3。
     若视频时长超过 split_threshold 秒（默认 15 分钟），则按 chunk_duration（默认 10 分钟）切分为多个片段，
-    文件名添加数字后缀（如 video_01.m4a, video_02.m4a）。
+    文件名添加数字后缀（如 video_01.mp3, video_02.mp3）。
     传 split_threshold <= 0 可关闭切分。
 
     ffmpeg 命令（单文件）:
-        ffmpeg -y -i input.mp4 -vn -acodec aac -b:a 192k -ar 44100 -f ipod output.m4a
+        ffmpeg -y -i input.mp4 -vn -acodec libmp3lame -b:a 192k -ar 44100 -f mp3 output.mp3
     ffmpeg 命令（切分片段）:
-        ffmpeg -y -ss <start> -i input.mp4 -t <chunk> -vn -acodec aac ... output_NN.m4a
+        ffmpeg -y -ss <start> -i input.mp4 -t <chunk> -vn -acodec libmp3lame ... output_NN.mp3
 
     Returns:
         (status, outputs) 其中 status 为 "ok" | "skipped" | "failed"。
@@ -120,11 +120,11 @@ def extract_audio(
 
     # —— 单文件路径（不切分）——
     if split_threshold <= 0 or duration <= 0 or duration <= split_threshold:
-        output = video.with_suffix(".m4a")
-        
-        # 避免自己覆盖自己：如果输入已经是 m4a 并且不需要切分，直接跳过
+        output = video.with_suffix(".mp3")
+
+        # 避免自己覆盖自己：如果输入已经是 mp3 并且不需要切分，直接跳过
         if video.resolve() == output.resolve():
-            print(f"  ⏭  跳过（文件已是 m4a 格式且无需切分）: {output.name}")
+            print(f"  ⏭  跳过（文件已是 mp3 格式且无需切分）: {output.name}")
             return "skipped", []
 
         if output.exists() and not overwrite:
@@ -141,7 +141,7 @@ def extract_audio(
     # —— 切分路径 ——
     full_chunks = int(duration // chunk_duration)
     remainder = duration % chunk_duration
-    
+
     # 如果最后一段剩下的时间太短（少于单段时长的 30%），则合并到前一段
     if remainder > 0 and remainder < (chunk_duration * 0.3) and full_chunks > 0:
         n_chunks = full_chunks
@@ -150,7 +150,7 @@ def extract_audio(
 
     width = max(2, len(str(n_chunks)))
     chunk_paths = [
-        video.parent / f"{video.stem}_{i:0{width}d}.m4a"
+        video.parent / f"{video.stem}_{i:0{width}d}.mp3"
         for i in range(1, n_chunks + 1)
     ]
 
@@ -182,7 +182,7 @@ def extract_audio(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="从文件夹中所有音视频文件提取/转换为 m4a 格式，并支持长文件切分",
+        description="从文件夹中所有音视频文件提取/转换为 mp3 格式，并支持长文件切分",
     )
     parser.add_argument(
         "folder",
@@ -202,7 +202,7 @@ def main():
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="覆盖已存在的 .m4a 文件 (默认跳过)",
+        help="覆盖已存在的 .mp3 文件 (默认跳过)",
     )
     parser.add_argument(
         "--split-threshold", "-t",
