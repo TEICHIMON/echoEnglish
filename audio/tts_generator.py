@@ -351,9 +351,19 @@ _GOOGLE_TOO_LONG_INDICATORS: tuple[str, ...] = (
 _TTS_STRONG_PUNCT = r"[。！？!?\.;；\n]+"
 _TTS_WEAK_PUNCT = r"[，、,]+"
 
+# Compiled probe for "does this string contain a sentence-ending mark?" — used
+# during bundling to decide whether a candidate bundle is one long sentence
+# (Google's rejection unit) or several short ones.
+_TTS_STRONG_PROBE = re.compile(r"[。！？!?\.;；\n]")
+
 
 def _is_too_long_error(err_str: str) -> bool:
     return any(s in err_str for s in _GOOGLE_TOO_LONG_INDICATORS)
+
+
+def _has_strong_punct(s: str) -> bool:
+    """True if s contains at least one sentence-ending punctuation mark."""
+    return bool(_TTS_STRONG_PROBE.search(s))
 
 
 def _split_on_punct(text: str, pattern: str) -> list[str]:
@@ -374,13 +384,27 @@ def _split_on_punct(text: str, pattern: str) -> list[str]:
     return [c.strip() for c in chunks if c.strip()]
 
 
-def _split_long_text(text: str, target_chars: int = 80) -> list[str]:
+def _split_long_text(
+    text: str,
+    target_chars: int = 80,
+    weak_target_chars: int = 50,
+) -> list[str]:
     """Split a too-long text into TTS-friendly pieces.
 
-    Splits on sentence-ending punctuation first, then sub-splits any chunk
-    that's still over target_chars on clause-pause punctuation. Adjacent
-    pieces are bundled back together up to target_chars to avoid choppy
-    prosody from over-fragmenting.
+    Google's "too long" error is measured per *sentence* (text between
+    sentence-ending marks like 。！？.!?), not per request. A 70-character
+    clause joined only by 中文逗号 is still one sentence to Google and trips
+    the limit even though the request itself is short.
+
+    Strategy:
+      1. Split on strong punctuation (sentence boundaries).
+      2. Any chunk still over `target_chars` is sub-split on weak punctuation;
+         if a chunk has no internal punctuation at all, we hard-cut at the
+         tighter `weak_target_chars` since it'll be one long sentence to Google.
+      3. Bundle adjacent small pieces back together to avoid choppy prosody —
+         but cap any all-comma bundle at `weak_target_chars`, not
+         `target_chars`. This is the fix for the bug where bundling produced
+         ~80-char comma-only chunks that Google still rejected.
     """
     text = text.strip()
     if not text:
@@ -397,29 +421,48 @@ def _split_long_text(text: str, target_chars: int = 80) -> list[str]:
             continue
         weak = _split_on_punct(chunk, _TTS_WEAK_PUNCT)
         if len(weak) <= 1:
-            # No internal punctuation to split on — hard-cut as a last resort.
+            # No internal punctuation to split on. Hard-cut at the tighter
+            # weak limit so we don't hand Google a comma-less wall of text.
             pieces.extend(
-                chunk[i : i + target_chars]
-                for i in range(0, len(chunk), target_chars)
+                chunk[i : i + weak_target_chars]
+                for i in range(0, len(chunk), weak_target_chars)
             )
         else:
             pieces.extend(weak)
 
-    # Bundle adjacent small pieces up to target_chars so we don't synthesize
-    # one-clause stubs.
+    # Bundle adjacent pieces. The applicable size limit depends on whether the
+    # candidate bundle contains a sentence-ending mark anywhere:
+    #   - If yes: Google sees multiple sentences inside, so target_chars is fine.
+    #   - If no:  Google sees one long sentence, so cap at weak_target_chars.
     bundled: list[str] = []
     current = ""
+    current_has_strong = False
     for p in pieces:
+        p_has_strong = _has_strong_punct(p)
         if not current:
             current = p
-        elif len(current) + len(p) <= target_chars:
-            current += p
+            current_has_strong = p_has_strong
+            continue
+        candidate = current + p
+        candidate_has_strong = current_has_strong or p_has_strong
+        limit = target_chars if candidate_has_strong else weak_target_chars
+        if len(candidate) <= limit:
+            current = candidate
+            current_has_strong = candidate_has_strong
         else:
             bundled.append(current)
             current = p
+            current_has_strong = p_has_strong
     if current:
         bundled.append(current)
     return bundled
+
+
+# Maximum recursion depth when a chunk produced by _split_long_text is itself
+# rejected as too long by Google. Each level halves the target sizes; 3 levels
+# is enough to bring an 80-char chunk down to ~10 chars, well below any
+# plausible per-sentence limit.
+_GOOGLE_SPLIT_MAX_DEPTH = 3
 
 
 def _google_generate_with_split(
@@ -429,14 +472,23 @@ def _google_generate_with_split(
     voice_name: str,
     speaking_rate: float,
     pitch: float,
+    target_chars: int = 80,
+    weak_target_chars: int = 50,
+    _depth: int = 0,
 ) -> int:
     """Synthesize a too-long text by splitting it on punctuation, generating
     each chunk separately, and concatenating the result into output_path.
 
-    Returns the number of chunks synthesized. Raises if splitting can't
-    produce more than one chunk (caller should treat as non-recoverable).
+    If a chunk is itself rejected as too long, recursively re-split that chunk
+    with progressively tighter limits (up to _GOOGLE_SPLIT_MAX_DEPTH levels).
+    Without recursion, a single overlong comma-only clause that survived the
+    first split would silently turn into a gap in the output.
+
+    Returns the total number of leaf chunks synthesized. Raises if no level of
+    splitting can produce more than one chunk (caller should treat as
+    non-recoverable and fall back to silence).
     """
-    chunks = _split_long_text(text)
+    chunks = _split_long_text(text, target_chars, weak_target_chars)
     if len(chunks) <= 1:
         raise RuntimeError(
             "text could not be split into smaller chunks for TTS"
@@ -445,11 +497,42 @@ def _google_generate_with_split(
     tmp_dir = Path(tempfile.mkdtemp(prefix="echo_tts_split_"))
     try:
         chunk_paths: list[Path] = []
+        leaf_count = 0
         for i, chunk in enumerate(chunks):
-            cp = tmp_dir / f"chunk_{i:03d}.mp3"
-            _google_generate_single(
-                client, chunk, cp, voice_name, speaking_rate, pitch,
-            )
+            cp = tmp_dir / f"chunk_d{_depth}_{i:03d}.mp3"
+            try:
+                _google_generate_single(
+                    client, chunk, cp, voice_name, speaking_rate, pitch,
+                )
+                leaf_count += 1
+            except Exception as e:
+                err_str = str(e)
+                if _is_too_long_error(err_str) and _depth < _GOOGLE_SPLIT_MAX_DEPTH:
+                    # Recurse with halved limits. The recursive call writes its
+                    # own concatenated MP3 to `cp`, which lives in OUR tmp_dir
+                    # (not the recursive call's), so it survives that call's
+                    # cleanup and we can read it back below.
+                    sub_target = max(20, target_chars // 2)
+                    sub_weak = max(15, weak_target_chars // 2)
+                    short_text = chunk[:30].replace("\n", " ")
+                    logger.info(
+                        f"Google TTS recursing (depth {_depth + 1}, "
+                        f"target={sub_target}/{sub_weak}) for "
+                        f"'{short_text}...'"
+                    )
+                    leaf_count += _google_generate_with_split(
+                        client, chunk, cp,
+                        voice_name, speaking_rate, pitch,
+                        target_chars=sub_target,
+                        weak_target_chars=sub_weak,
+                        _depth=_depth + 1,
+                    )
+                else:
+                    # Either not a "too long" error, or we've exhausted depth.
+                    # Re-raise so the outer _work() handler logs it and falls
+                    # back to silence for this segment.
+                    raise
+
             chunk_paths.append(cp)
 
         combined = AudioSegment.empty()
@@ -459,7 +542,7 @@ def _google_generate_with_split(
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    return len(chunks)
+    return leaf_count
 
 
 def _run_google_batch(
@@ -504,8 +587,9 @@ def _run_google_batch(
 
                 # "Sentence too long" is non-retryable as-is, but recoverable
                 # by splitting the text on punctuation and synthesizing each
-                # piece separately. Without this branch, a single overlong
-                # clause would silently turn into a gap in the output.
+                # piece separately. The split helper recurses on tighter
+                # limits if any of its chunks is itself too long, so we don't
+                # need a retry loop here for that error class.
                 if _is_too_long_error(err_str):
                     try:
                         n_chunks = _google_generate_with_split(
