@@ -360,6 +360,11 @@ def is_weak_line_end(text: str, lang: str) -> bool:
     if not text:
         return True
 
+    # Sentence-ending punctuation makes even a function word like "but..."
+    # a complete boundary, not an incomplete weak tail.
+    if has_sentence_end(text, lang):
+        return False
+
     if lang == "en":
         last_word = get_last_word(text)
 
@@ -706,7 +711,11 @@ def should_merge_with_previous(prev_text: str, current_text: str, lang: str) -> 
     if first_word in EN_TAIL_START_WORDS:
         return True
 
-    if prev_last in EN_WEAK_END_WORDS and len(cur_words) <= 6:
+    if (
+        prev_last in EN_WEAK_END_WORDS
+        and len(cur_words) <= 6
+        and not has_sentence_end(prev, lang)
+    ):
         return True
 
     if len(cur_words) <= 3 and not has_sentence_end(prev, lang):
