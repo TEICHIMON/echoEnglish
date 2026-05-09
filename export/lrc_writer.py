@@ -2,7 +2,7 @@
 Echo Loop LRC writer module.
 
 Generates an LRC subtitle file for the assembled Echo Loop audio.
-Supports full, progressive, and shadow variants.
+Supports full, progressive, shadow, and explicit T-N-T / T-S-T repeat counts.
 """
 
 import logging
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydub import AudioSegment
 
-from audio.assembler import EchoTiming
+from audio.assembler import EchoTiming, resolve_loop_pattern
 from parser.lrc_parser import Segment
 
 
@@ -49,6 +49,8 @@ def generate_echo_lrc(
     output_path: str | Path,
     delimiter: str = "-",
     variant: str = "full",
+    tnt_repeats=None,
+    tst_repeats=None,
 ) -> Path:
     """Generate an LRC subtitle file matching the Echo Loop audio."""
     if len(segments) != len(target_audios) or len(segments) != len(native_audios):
@@ -63,6 +65,8 @@ def generate_echo_lrc(
 
     lines: list[str] = []
     pos_ms = 0
+    pattern = resolve_loop_pattern(variant, tnt_repeats, tst_repeats)
+    passes_per_segment = pattern.tnt_repeats + pattern.tst_repeats
 
     for i, seg in enumerate(segments):
         target_dur = len(target_audios[i])
@@ -70,17 +74,7 @@ def generate_echo_lrc(
         text = f"{seg.target_text}{delimiter}{seg.native_text}"
         loop_dur = _loop_duration_ms(target_dur, native_dur, timing)
 
-        if variant == "shadow":
-            lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
-            pos_ms += loop_dur
-
-        elif variant == "progressive":
-            lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
-            pos_ms += loop_dur
-            lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
-            pos_ms += loop_dur
-
-        else:  # full
+        for _ in range(passes_per_segment):
             lines.append(f"{_fmt_lrc_time(pos_ms)}{text}")
             pos_ms += loop_dur
 

@@ -99,8 +99,8 @@ def extract_audio(
         bitrate: str = "192k",
         sample_rate: int = 44100,
         overwrite: bool = False,
-        split_threshold: float = 900.0,
-        chunk_duration: float = 600.0,
+        split_threshold: float = 300.0,
+        chunk_duration: float = 300.0,
 ) -> tuple[str, list[Path]]:
     """
     用 ffmpeg 从单个视频文件中提取音频，输出为 .mp3。
@@ -207,7 +207,7 @@ def main():
     parser.add_argument(
         "--split-threshold", "-t",
         type=float,
-        default=900.0,
+        default=600.0,
         help="触发切分的时长阈值（秒）；传 0 关闭切分 (默认: 900 = 15 分钟)",
     )
     parser.add_argument(
