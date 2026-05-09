@@ -30,7 +30,7 @@ from parser.lrc_parser import parse_lrc
 from parser.text_parser import parse_text
 from audio.splitter import load_audio, extract_all_segments
 from audio.tts_generator import generate_native_audio, generate_target_audio
-from audio.assembler import assemble_all_loops, EchoTiming
+from audio.assembler import assemble_all_loops, EchoTiming, resolve_loop_pattern
 from export.exporter import export_audio
 from export.lrc_writer import generate_echo_lrc
 from scanner.scanner import scan_folder, print_scan_summary, ScanItem
@@ -95,6 +95,8 @@ def load_config(config_path: str | Path | None = None) -> dict:
         },
         "loop": {
             "variant": "full",
+            "tnt_repeats": None,
+            "tst_repeats": None,
         },
     }
 
@@ -215,8 +217,18 @@ Modes:
     timing_group.add_argument("--after-native", type=float, default=None)
     timing_group.add_argument("--after-second-target", type=float, default=None)
 
-    parser.add_argument(
+    loop_group = parser.add_argument_group("Loop pattern (overrides config)")
+    loop_group.add_argument(
         "--variant", choices=["full", "progressive", "shadow"], default=None,
+        help="Preset loop pattern",
+    )
+    loop_group.add_argument(
+        "--tnt-repeats", type=int, default=None,
+        help="Number of T-N-T passes per segment",
+    )
+    loop_group.add_argument(
+        "--tst-repeats", type=int, default=None,
+        help="Number of T-S-T shadow passes per segment",
     )
 
     tts_group = parser.add_argument_group("TTS (overrides config)")
@@ -296,6 +308,12 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
 
     if args.variant:
         config["loop"]["variant"] = args.variant
+        config["loop"]["tnt_repeats"] = None
+        config["loop"]["tst_repeats"] = None
+    if args.tnt_repeats is not None:
+        config["loop"]["tnt_repeats"] = args.tnt_repeats
+    if args.tst_repeats is not None:
+        config["loop"]["tst_repeats"] = args.tst_repeats
 
     return config
 
@@ -388,6 +406,20 @@ def _engine_label(config: dict) -> str:
     return "edge-tts"
 
 
+def _loop_kwargs(config: dict) -> dict:
+    loop = config.get("loop", {})
+    return {
+        "variant": loop.get("variant", "full"),
+        "tnt_repeats": loop.get("tnt_repeats"),
+        "tst_repeats": loop.get("tst_repeats"),
+    }
+
+
+def _loop_label(config: dict) -> str:
+    pattern = resolve_loop_pattern(**_loop_kwargs(config))
+    return f"{pattern.tnt_repeats} T-N-T + {pattern.tst_repeats} T-S-T"
+
+
 def progress_bar(current: int, total: int) -> None:
     """
     Render progress bar for tty (interactive); log decile checkpoints otherwise.
@@ -441,11 +473,11 @@ def _assemble_and_export(
     timing, config, output_path, lrc_output_path, work_dir,
 ) -> None:
     """Assemble Echo Loops, export audio and LRC, clean up."""
-    variant = config.get("loop", {}).get("variant", "full")
+    loop_kwargs = _loop_kwargs(config)
 
     logger.info("  Assembling Echo Loops...")
     result = assemble_all_loops(
-        target_audios, native_audios, timing, progress_bar, variant=variant,
+        target_audios, native_audios, timing, progress_bar, **loop_kwargs,
     )
 
     logger.info("  Exporting...")
@@ -460,7 +492,7 @@ def _assemble_and_export(
     generate_echo_lrc(
         segments, target_audios, native_audios, timing,
         lrc_output_path, delimiter=config["lrc"]["delimiter"],
-        variant=variant,
+        **loop_kwargs,
     )
 
     shutil.rmtree(work_dir, ignore_errors=True)
@@ -498,7 +530,7 @@ def run_audio_mode(config: dict) -> None:
         if config["tts"]["engine"] == "edge":
             logger.info(f"  Native TTS: {config['tts']['native_voice']}")
         logger.info(f"  TTS Volume: {_volume_label(config)}")
-        logger.info(f"  Variant:    {config['loop']['variant']}")
+        logger.info(f"  Loop:       {_loop_label(config)}")
         if folder_log:
             logger.info(f"  Folder log: {folder_log}")
         central_log = get_central_log_path()
@@ -582,6 +614,7 @@ def run_text_mode(config: dict) -> None:
             logger.info(f"  Target TTS: {config['tts']['target_voice']}")
             logger.info(f"  Native TTS: {config['tts']['native_voice']}")
         logger.info(f"  TTS Volume: {_volume_label(config)}")
+        logger.info(f"  Loop:       {_loop_label(config)}")
         if folder_log:
             logger.info(f"  Folder log: {folder_log}")
         central_log = get_central_log_path()
@@ -670,6 +703,7 @@ def run_batch_mode(config: dict) -> None:
             if mode_filter in ("", "text"):
                 logger.info(f"  Target TTS:  {config['tts']['target_voice']}")
         logger.info(f"  TTS Volume:  {_volume_label(config)}")
+        logger.info(f"  Loop:        {_loop_label(config)}")
         if folder_log:
             logger.info(f"  Folder log:  {folder_log}")
         central_log = get_central_log_path()

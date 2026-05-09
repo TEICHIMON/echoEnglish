@@ -1,16 +1,18 @@
 # Echo Loop Generator
 
-Generate **T•N•T** (Target → Native → Target) Echo Loop audio files for language learning, with audio-extraction, text-only TTS, and batch modes.
+Generate configurable **T•N•T** (Target → Native → Target) and **T•S•T** (Target → Shadow → Target) Echo Loop audio files for language learning, with audio-extraction, text-only TTS, and batch modes.
 
 Based on *"Echo: Rebuilding the Natural Reflex of Language"* by H. Reeve.
 
 ## What is an Echo Loop?
 
-The Echo Loop follows the **T-S-N-S-T-S** pattern:
+The basic T-N-T Echo Loop pass follows the **T-S-N-S-T-S** pattern:
 
 ```
 [Target Audio] → [silence] → [Native TTS] → [silence] → [Target Audio] → [silence]
 ```
+
+You can also repeat each segment as multiple T-N-T passes followed by multiple T-S-T shadow passes.
 
 This structure uses the reflex energy of your native language to ignite comprehension of the target language — not through translation, but through resonance.
 
@@ -273,6 +275,16 @@ In single-file modes, if omitted, defaults to `<input_stem>_echo.<format>` in th
 | `--after-native` | `0.5` | Silence after native phrase (seconds) |
 | `--after-second-target` | `1.2` | Silence after 2nd target phrase / loop gap (seconds) |
 
+### Loop Pattern Overrides
+
+| Flag | Default | Description |
+|---|---|---|
+| `--variant {full,progressive,shadow}` | config | Preset loop pattern |
+| `--tnt-repeats` | preset | Number of T-N-T passes per segment |
+| `--tst-repeats` | preset | Number of T-S-T shadow passes per segment |
+
+Variant presets are `full` = `1 T-N-T + 0 T-S-T`, `progressive` = `1 T-N-T + 1 T-S-T`, and `shadow` = `0 T-N-T + 1 T-S-T`. Explicit repeat counts override the matching preset value. Passes are always ordered as all T-N-T passes first, then all T-S-T passes.
+
 ### TTS Engine & Voice Overrides
 
 | Flag | Default | Description |
@@ -385,6 +397,11 @@ output:
 lrc:
   delimiter: "|||"
   split_strategy: "last"
+
+loop:
+  variant: "progressive"
+  tnt_repeats:          # optional; leave empty to use the variant preset
+  tst_repeats:          # optional; leave empty to use the variant preset
 ```
 
 ---
@@ -455,6 +472,11 @@ python main.py lesson01.mp3 lesson01.lrc \
     --after-first-target 1.0 \
     --after-native 0.6 \
     --after-second-target 1.5
+
+# Repeat each segment as 2 T-N-T passes, then 3 T-S-T passes
+python main.py lesson01.mp3 lesson01.lrc \
+    --tnt-repeats 2 \
+    --tst-repeats 3
 
 # Override native voice
 python main.py lesson01.mp3 lesson01.lrc \
