@@ -111,6 +111,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "variant": "full",
             "tnt_repeats": None,
             "tst_repeats": None,
+            "split_outputs": False,
         },
     }
 
@@ -244,6 +245,14 @@ Modes:
         "--tst-repeats", type=int, default=None,
         help="Number of T-S-T shadow passes per segment",
     )
+    loop_group.add_argument(
+        "--split-outputs", dest="split_outputs", action="store_true", default=None,
+        help="Emit two files per input: {stem}_tnt and {stem}_tst (TTS is generated once and shared)",
+    )
+    loop_group.add_argument(
+        "--no-split-outputs", dest="split_outputs", action="store_false",
+        help="Force single combined output even if split_outputs is set in config",
+    )
 
     tts_group = parser.add_argument_group("TTS (overrides config)")
     tts_group.add_argument("--engine", choices=["edge", "openai", "google"], default=None)
@@ -339,6 +348,8 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["loop"]["tnt_repeats"] = args.tnt_repeats
     if args.tst_repeats is not None:
         config["loop"]["tst_repeats"] = args.tst_repeats
+    if args.split_outputs is not None:
+        config["loop"]["split_outputs"] = args.split_outputs
 
     return config
 
@@ -442,7 +453,41 @@ def _loop_kwargs(config: dict) -> dict:
 
 def _loop_label(config: dict) -> str:
     pattern = resolve_loop_pattern(**_loop_kwargs(config))
-    return f"{pattern.tnt_repeats} T-N-T + {pattern.tst_repeats} T-S-T"
+    base = f"{pattern.tnt_repeats} T-N-T + {pattern.tst_repeats} T-S-T"
+    if config.get("loop", {}).get("split_outputs"):
+        base += " (split into _tnt + _tst files)"
+    return base
+
+
+def _split_enabled(config: dict) -> bool:
+    return bool(config.get("loop", {}).get("split_outputs"))
+
+
+def _split_paths_from_stem(parent: Path, stem: str, ext: str) -> tuple[Path, Path, Path, Path]:
+    """Return (tnt_audio, tnt_lrc, tst_audio, tst_lrc) for a given input stem."""
+    tnt_audio = parent / f"{stem}_tnt.{ext}"
+    tst_audio = parent / f"{stem}_tst.{ext}"
+    return tnt_audio, tnt_audio.with_suffix(".lrc"), tst_audio, tst_audio.with_suffix(".lrc")
+
+
+def resolve_split_output_paths(config: dict, mode: str) -> tuple[Path, Path, Path, Path]:
+    """Compute split output paths for single-file modes (audio / text)."""
+    paths = config["paths"]
+    ext = config["output"]["format"]
+    if mode == "text" and paths.get("text"):
+        source = Path(paths["text"])
+    elif mode == "audio" and paths.get("audio"):
+        source = Path(paths["audio"])
+    else:
+        source = Path("output")
+    return _split_paths_from_stem(source.parent, source.stem, ext)
+
+
+def resolve_split_output_paths_for_item(item: ScanItem, config: dict) -> tuple[Path, Path, Path, Path]:
+    """Compute split output paths for a batch item."""
+    ext = config["output"]["format"]
+    source = item.audio_path if item.mode == "audio" else item.text_path
+    return _split_paths_from_stem(source.parent, source.stem, ext)
 
 
 def progress_bar(current: int, total: int) -> None:
@@ -493,19 +538,19 @@ def _tts_engine_kwargs(config: dict) -> dict:
     }
 
 
-def _assemble_and_export(
+def _assemble_export_one(
     segments, target_audios, native_audios,
-    timing, config, output_path, lrc_output_path, work_dir,
+    timing, config, output_path, lrc_output_path,
+    tnt_repeats: int, tst_repeats: int, label: str,
 ) -> None:
-    """Assemble Echo Loops, export audio and LRC, clean up."""
-    loop_kwargs = _loop_kwargs(config)
-
-    logger.info("  Assembling Echo Loops...")
+    """Assemble and export a single output with explicit TNT/TST counts."""
+    logger.info(f"  Assembling {label} ({tnt_repeats} T-N-T + {tst_repeats} T-S-T)...")
     result = assemble_all_loops(
-        target_audios, native_audios, timing, progress_bar, **loop_kwargs,
+        target_audios, native_audios, timing, progress_bar,
+        variant="full", tnt_repeats=tnt_repeats, tst_repeats=tst_repeats,
     )
 
-    logger.info("  Exporting...")
+    logger.info(f"  Exporting {label}...")
     export_audio(
         result,
         output_path,
@@ -517,11 +562,64 @@ def _assemble_and_export(
     generate_echo_lrc(
         segments, target_audios, native_audios, timing,
         lrc_output_path, delimiter=config["lrc"]["delimiter"],
-        **loop_kwargs,
+        variant="full", tnt_repeats=tnt_repeats, tst_repeats=tst_repeats,
     )
 
-    shutil.rmtree(work_dir, ignore_errors=True)
-    logger.info(f"✓ Done! Echo Loop file saved to: {output_path}")
+    logger.info(f"✓ {label} saved to: {output_path}")
+
+
+def _assemble_and_export(
+    segments, target_audios, native_audios,
+    timing, config, output_path, lrc_output_path, work_dir,
+) -> None:
+    """Assemble Echo Loops, export audio and LRC, clean up.
+
+    When loop.split_outputs is set, emits two files (T-N-T only and T-S-T only)
+    derived from the same TTS / target audio — output_path is treated as the
+    template and the _tnt / _tst variants are written alongside the source input.
+    """
+    pattern = resolve_loop_pattern(**_loop_kwargs(config))
+
+    try:
+        if _split_enabled(config):
+            parent = output_path.parent
+            stem = output_path.stem
+            # Strip a trailing _echo suffix if the caller derived the path that way.
+            if stem.endswith("_echo"):
+                stem = stem[:-5]
+            ext = config["output"]["format"]
+            tnt_audio_out, tnt_lrc_out, tst_audio_out, tst_lrc_out = \
+                _split_paths_from_stem(parent, stem, ext)
+
+            if pattern.tnt_repeats > 0:
+                _assemble_export_one(
+                    segments, target_audios, native_audios,
+                    timing, config, tnt_audio_out, tnt_lrc_out,
+                    tnt_repeats=pattern.tnt_repeats, tst_repeats=0,
+                    label="T-N-T file",
+                )
+            else:
+                logger.info("  Skipping T-N-T output (tnt_repeats=0)")
+
+            if pattern.tst_repeats > 0:
+                _assemble_export_one(
+                    segments, target_audios, native_audios,
+                    timing, config, tst_audio_out, tst_lrc_out,
+                    tnt_repeats=0, tst_repeats=pattern.tst_repeats,
+                    label="T-S-T file",
+                )
+            else:
+                logger.info("  Skipping T-S-T output (tst_repeats=0)")
+        else:
+            _assemble_export_one(
+                segments, target_audios, native_audios,
+                timing, config, output_path, lrc_output_path,
+                tnt_repeats=pattern.tnt_repeats,
+                tst_repeats=pattern.tst_repeats,
+                label="Echo Loop file",
+            )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def run_audio_mode(config: dict) -> None:
@@ -758,7 +856,22 @@ def run_batch_mode(config: dict) -> None:
             logger.info("─" * 60)
 
             output_path, lrc_output_path = resolve_output_paths_for_item(item, config)
-            if output_path.exists() and lrc_output_path.exists():
+            if _split_enabled(config):
+                tnt_a, tnt_l, tst_a, tst_l = resolve_split_output_paths_for_item(item, config)
+                pattern = resolve_loop_pattern(**_loop_kwargs(config))
+                expected: list[Path] = []
+                if pattern.tnt_repeats > 0:
+                    expected += [tnt_a, tnt_l]
+                if pattern.tst_repeats > 0:
+                    expected += [tst_a, tst_l]
+                if expected and all(p.exists() for p in expected):
+                    logger.info(
+                        f"  ⏭  Skipped (already exists): "
+                        + ", ".join(p.name for p in expected)
+                    )
+                    skipped.append(label)
+                    continue
+            elif output_path.exists() and lrc_output_path.exists():
                 logger.info(
                     f"  ⏭  Skipped (already exists): "
                     f"{output_path.name}, {lrc_output_path.name}"
