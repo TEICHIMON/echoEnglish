@@ -97,3 +97,8 @@ loop:
   # T-N-T + T-N-T + T-S-T + T-S-T + T-S-T for each segment.
   tnt_repeats: 2
   tst_repeats: 1
+
+  # When true, emit two files per input — {stem}_tnt.{ext} contains only the
+  # T-N-T passes, {stem}_tst.{ext} contains only the T-S-T passes. TTS is
+  # generated once and shared between both files (no extra API cost).
+  split_outputs: true
