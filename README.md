@@ -22,7 +22,7 @@ The generator supports three TTS engines, selectable per run via config or CLI:
 
 | Engine | Cost | Strengths | Flag |
 |---|---|---|---|
-| **Google Cloud TTS** | Paid | Stable, high-quality Neural2 / Chirp3-HD voices, broad language coverage | `--engine google` |
+| **Google Cloud TTS** | Paid | Stable, high-quality Chirp3-HD / Neural2 voices, broad language coverage | `--engine google` |
 | **edge-tts** | Free | Many voices, no API key — but occasional 503s on long batches | `--engine edge` |
 | **OpenAI gpt-4o-mini-tts** | Paid | Reads math formulas naturally, semantic understanding, instruction-tunable | `--engine openai` |
 
@@ -48,7 +48,7 @@ The generator supports three TTS engines, selectable per run via config or CLI:
    tts:
      engine: "google"
      google:
-       target_voice: "ja-JP-Neural2-B"          # Japanese male Neural2
+       target_voice: "ja-JP-Chirp3-HD-Charon"   # Japanese male Chirp3-HD
        native_voice: "cmn-CN-Chirp3-HD-Kore"    # Chinese female Chirp3-HD
        speaking_rate: 1.0
        pitch: 0.0                                # ignored by Chirp3-HD
@@ -59,7 +59,7 @@ The generator supports three TTS engines, selectable per run via config or CLI:
    python main.py --text phrases.txt \
        --engine google \
        --google-voice cmn-CN-Chirp3-HD-Kore \
-       --google-target-voice ja-JP-Neural2-B
+       --google-target-voice ja-JP-Chirp3-HD-Charon
    ```
 
 > **Note:** Chirp3-HD voices ignore the `pitch` parameter — set `pitch: 0.0` (the default) when using them. Neural2 / Wavenet / Standard voices accept pitch normally.
@@ -295,7 +295,7 @@ Variant presets are `full` = `1 T-N-T + 0 T-S-T`, `progressive` = `1 T-N-T + 1 T
 | `--voice` | — | Alias for `--native-voice` (backward compatible) |
 | `--rate` | `+0%` | Speech rate (e.g., `+10%`, `-20%`) — edge-tts only |
 | `--google-voice` | `cmn-CN-Chirp3-HD-Kore` | Google native voice — google engine only |
-| `--google-target-voice` | `ja-JP-Neural2-B` | Google target voice — google engine only |
+| `--google-target-voice` | `ja-JP-Chirp3-HD-Charon` | Google target voice — google engine only |
 | `--openai-voice` | `coral` | OpenAI TTS voice — openai engine only |
 | `--openai-instructions` | — | OpenAI TTS instructions prompt — openai engine only |
 
@@ -373,7 +373,7 @@ tts:
 
   # --- Google Cloud TTS settings (used when engine: "google") ---
   google:
-    target_voice: "ja-JP-Neural2-B"
+    target_voice: "ja-JP-Chirp3-HD-Charon"
     native_voice: "cmn-CN-Chirp3-HD-Kore"
     speaking_rate: 1.0
     pitch: 0.0
