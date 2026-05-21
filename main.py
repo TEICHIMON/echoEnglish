@@ -46,6 +46,20 @@ from echo_logging import (
 logger = logging.getLogger(__name__)
 
 
+# --lang preset: one flag to switch the target language across engines.
+# Explicit --target-voice / --google-target-voice still override these.
+LANG_PRESETS: dict[str, dict[str, str]] = {
+    "ja": {
+        "google": "ja-JP-Chirp3-HD-Charon",
+        "edge":   "ja-JP-NanamiNeural",
+    },
+    "en": {
+        "google": "en-US-Chirp3-HD-Charon",
+        "edge":   "en-US-JennyNeural",
+    },
+}
+
+
 def load_config(config_path: str | Path | None = None) -> dict:
     """Load configuration from YAML file, falling back to defaults."""
     defaults = {
@@ -76,7 +90,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
                 "instructions": "",
             },
             "google": {
-                "target_voice": "ja-JP-Neural2-B",
+                "target_voice": "ja-JP-Chirp3-HD-Charon",
                 "native_voice": "cmn-CN-Chirp3-HD-Kore",
                 "speaking_rate": 1.0,
                 "pitch": 0.0,
@@ -233,6 +247,11 @@ Modes:
 
     tts_group = parser.add_argument_group("TTS (overrides config)")
     tts_group.add_argument("--engine", choices=["edge", "openai", "google"], default=None)
+    tts_group.add_argument(
+        "--lang", choices=sorted(LANG_PRESETS.keys()), default=None,
+        help="Target language preset (ja / en). Sets target voice for "
+             "google + edge engines. Overridden by --target-voice / --google-target-voice.",
+    )
     tts_group.add_argument("--target-voice", default=None)
     tts_group.add_argument("--native-voice", default=None)
     tts_group.add_argument("--voice", default=None)
@@ -278,6 +297,12 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
 
     if args.engine:
         config["tts"]["engine"] = args.engine
+
+    if args.lang:
+        preset = LANG_PRESETS[args.lang]
+        config["tts"]["target_voice"] = preset["edge"]
+        config["tts"]["google"]["target_voice"] = preset["google"]
+
     if args.target_voice:
         config["tts"]["target_voice"] = args.target_voice
     if args.native_voice:

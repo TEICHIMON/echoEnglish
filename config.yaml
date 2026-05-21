@@ -39,10 +39,10 @@ tts:
 
   # --- Google Cloud TTS settings (used when engine: "google") ---
   google:
-    target_voice: "ja-JP-Neural2-B"           # Japanese male Neural2
+    target_voice: "ja-JP-Chirp3-HD-Charon"    # Japanese male Chirp3-HD
     native_voice: "cmn-CN-Chirp3-HD-Kore"     # Chinese female Chirp3-HD
     speaking_rate: 1.0                         # 0.25 to 4.0
-    pitch: 0.0                                 # -20.0 to 20.0 semitones (ignored by Chirp3-HD)
+    pitch: 0.0                                 # -20.0 to 20.0 semitones (ignored by Chirp3-HD; must be 0.0)
 
   # --- OpenAI TTS settings (used when engine: "openai") ---
   openai:
