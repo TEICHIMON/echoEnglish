@@ -664,7 +664,15 @@ def _load_audio_files(
 
     for i, path in enumerate(paths):
         if path.exists() and path.stat().st_size > 0:
-            audio = AudioSegment.from_file(str(path), format="mp3")
+            try:
+                audio = AudioSegment.from_file(str(path), format="mp3")
+            except Exception as e:
+                snippet = texts[i][:60].replace("\n", " ")
+                raise RuntimeError(
+                    f"Corrupt TTS output at segment #{i} "
+                    f"({path.name}, {path.stat().st_size} bytes): {e}\n"
+                    f"  Text: {snippet!r} (len={len(texts[i])})"
+                ) from e
             audio = _adjust_volume(audio, gain_db, normalize_target_dbfs)
             audios.append(audio)
         else:

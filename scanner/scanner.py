@@ -19,8 +19,18 @@ AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "flac", "ogg", "aac", "wma"}
 # Text extension for text-only mode
 TEXT_EXTENSION = "txt"
 
-# Suffix appended to output files — skip these on re-scan
+# Suffixes appended to output files — skip these on re-scan so the script
+# doesn't pick up its own previous outputs as new inputs.
+#   _echo : non-split (single-output) mode
+#   _tnt  : split-mode T-N-T variant (text-mode output)
+#   _tst  : split-mode T-S-T variant (text-mode output)
 ECHO_SUFFIX = "_echo"
+OUTPUT_SUFFIXES: tuple[str, ...] = ("_echo", "_tnt", "_tst")
+
+
+def _is_output_file(stem: str) -> bool:
+    """Return True if a file's stem looks like one of our previous outputs."""
+    return any(stem.endswith(s) for s in OUTPUT_SUFFIXES)
 
 
 @dataclass
@@ -63,7 +73,7 @@ def scan_folder(
             if (
                 f.is_file()
                 and f.suffix.lower().lstrip(".") in AUDIO_EXTENSIONS
-                and not f.stem.endswith(ECHO_SUFFIX)
+                and not _is_output_file(f.stem)
             ):
                 audio_files[f.stem] = f
 
@@ -88,7 +98,7 @@ def scan_folder(
                 f.is_file()
                 and f.suffix.lower().lstrip(".") == TEXT_EXTENSION
                 and f.stem not in paired_stems
-                and not f.stem.endswith(ECHO_SUFFIX)
+                and not _is_output_file(f.stem)
             ):
                 items.append(ScanItem(
                     mode="text",
