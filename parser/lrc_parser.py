@@ -21,6 +21,7 @@ class Segment:
     end_ms: int            # end time in milliseconds (derived from next segment's start)
     target_text: str       # target language text (Japanese/English)
     native_text: str       # native language text (Chinese)
+    role: str = ""         # optional speaker role, e.g. "q" / "a" in interview mode
 
     @property
     def start_sec(self) -> float:
@@ -52,6 +53,10 @@ class Segment:
 
 # Regex to match LRC timestamp: [mm:ss.xx] or [mm:ss.xxx]
 LRC_PATTERN = re.compile(r"\[(\d{2}):(\d{2})\.(\d{2,3})\](.+)")
+SPEAKER_PREFIX_PATTERN = re.compile(
+    r"^\s*(q|question|interviewer|a|answer|candidate|interviewee)\s*[:：]\s*(.+)$",
+    re.IGNORECASE,
+)
 
 
 def _parse_timestamp(minutes: str, seconds: str, centis: str) -> int:
@@ -79,16 +84,25 @@ def _split_bilingual(text: str, delimiter: str, strategy: str = "last") -> tuple
     """
     if delimiter not in text:
         # No delimiter found, treat entire text as target, empty native
-        return text.strip(), ""
+        return _strip_speaker_prefix(text), ""
 
     if strategy == "last":
         idx = text.rfind(delimiter)
     else:
         idx = text.find(delimiter)
 
-    target = text[:idx].strip()
-    native = text[idx + len(delimiter):].strip()
+    target = _strip_speaker_prefix(text[:idx])
+    native = _strip_speaker_prefix(text[idx + len(delimiter):])
     return target, native
+
+
+def _strip_speaker_prefix(text: str) -> str:
+    """Remove leading interview/transcript role markers before TTS."""
+    text = text.strip()
+    match = SPEAKER_PREFIX_PATTERN.match(text)
+    if match:
+        return match.group(2).strip()
+    return text
 
 
 def parse_lrc(

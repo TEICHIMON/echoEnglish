@@ -7,8 +7,10 @@ audio files for language learning, based on "Echo: Rebuilding the Natural Reflex
 of Language" by H. Reeve.
 
 Three modes:
+  Interactive: python main.py -i
   Audio mode:  python main.py lesson01.mp3 lesson01.lrc
   Text mode:   python main.py --text phrases.txt
+  Interview:   python main.py --interview interview.txt
   Batch mode:  python main.py --scan /path/to/folder
   Config-only: python main.py  (paths set in config.yaml)
 """
@@ -28,6 +30,7 @@ from dotenv import load_dotenv
 
 from parser.lrc_parser import parse_lrc
 from parser.text_parser import parse_text
+from parser.interview_parser import parse_interview_text
 from audio.splitter import load_audio, extract_all_segments
 from audio.tts_generator import generate_native_audio, generate_target_audio
 from audio.assembler import assemble_all_loops, EchoTiming, resolve_loop_pattern
@@ -48,16 +51,52 @@ logger = logging.getLogger(__name__)
 
 # --lang preset: one flag to switch the target language across engines.
 # Explicit --target-voice / --google-target-voice still override these.
+# These are defaults only — config.yaml's `tts.lang_presets` can override
+# any voice per language so English and Japanese sound like different speakers.
+# NOTE: Chirp3-HD persona names (Charon, Puck, ...) carry the same timbre
+# across languages, so ja and en must use *different* personas to sound apart.
 LANG_PRESETS: dict[str, dict[str, str]] = {
     "ja": {
-        "google": "ja-JP-Chirp3-HD-Charon",
+        "google": "ja-JP-Chirp3-HD-Charon",   # male persona
         "edge":   "ja-JP-NanamiNeural",
     },
     "en": {
-        "google": "en-US-Chirp3-HD-Charon",
+        "google": "en-US-Chirp3-HD-Puck",     # distinct male persona from ja
         "edge":   "en-US-JennyNeural",
     },
 }
+
+INTERVIEW_LANG_PRESETS: dict[str, dict[str, object]] = {
+    "ja": {
+        "interviewer_voice": "ja-JP-KeitaNeural",
+        "interviewee_voice": "ja-JP-NanamiNeural",
+        "google": {
+            "interviewer_voice": "ja-JP-Chirp3-HD-Charon",
+            "interviewee_voice": "ja-JP-Chirp3-HD-Kore",
+        },
+        "openai": {
+            "interviewer_voice": "echo",
+            "interviewee_voice": "coral",
+        },
+    },
+    "en": {
+        "interviewer_voice": "en-US-GuyNeural",
+        "interviewee_voice": "en-US-JennyNeural",
+        "google": {
+            "interviewer_voice": "en-US-Chirp3-HD-Charon",
+            "interviewee_voice": "en-US-Chirp3-HD-Kore",
+        },
+        "openai": {
+            "interviewer_voice": "echo",
+            "interviewee_voice": "coral",
+        },
+    },
+}
+
+OPENAI_VOICES: tuple[str, ...] = (
+    "alloy", "ash", "ballad", "cedar", "coral", "echo",
+    "fable", "nova", "onyx", "sage", "shimmer", "verse",
+)
 
 
 def load_config(config_path: str | Path | None = None) -> dict:
@@ -69,6 +108,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "audio": "",
             "lrc": "",
             "text": "",
+            "interview": "",
             "output": "",
             "output_lrc": "",
         },
@@ -86,6 +126,8 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "openai": {
                 "model": "gpt-4o-mini-tts",
                 "voice": "coral",
+                "target_voice": "",
+                "native_voice": "",
                 "speed": 1.0,
                 "instructions": "",
             },
@@ -95,6 +137,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
                 "speaking_rate": 1.0,
                 "pitch": 0.0,
             },
+            "lang_presets": copy.deepcopy(LANG_PRESETS),
             "gain": 0,
             "normalize": None,
         },
@@ -113,6 +156,20 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "tst_repeats": None,
             "split_outputs": False,
         },
+        "interview": {
+            "lang": "en",
+            "interviewer_voice": "en-US-GuyNeural",
+            "interviewee_voice": "en-US-JennyNeural",
+            "google": {
+                "interviewer_voice": "en-US-Chirp3-HD-Charon",
+                "interviewee_voice": "en-US-Chirp3-HD-Kore",
+            },
+            "openai": {
+                "interviewer_voice": "echo",
+                "interviewee_voice": "coral",
+            },
+            "presets": copy.deepcopy(INTERVIEW_LANG_PRESETS),
+        },
     }
 
     if config_path and Path(config_path).exists():
@@ -124,14 +181,42 @@ def load_config(config_path: str | Path | None = None) -> dict:
             for section in ("paths", "timing", "output", "lrc", "loop"):
                 if section in user_config and isinstance(user_config[section], dict):
                     defaults[section].update(user_config[section])
+            if "interview" in user_config and isinstance(user_config["interview"], dict):
+                interview_user = user_config["interview"]
+                if "google" in interview_user and isinstance(interview_user["google"], dict):
+                    defaults["interview"]["google"].update(interview_user["google"])
+                if "openai" in interview_user and isinstance(interview_user["openai"], dict):
+                    defaults["interview"]["openai"].update(interview_user["openai"])
+                if "presets" in interview_user and isinstance(interview_user["presets"], dict):
+                    for lang, preset in interview_user["presets"].items():
+                        if not isinstance(preset, dict):
+                            continue
+                        target = defaults["interview"]["presets"].setdefault(lang, {})
+                        for k, v in preset.items():
+                            if k in ("google", "openai") and isinstance(v, dict):
+                                target.setdefault(k, {}).update(v)
+                            else:
+                                target[k] = v
+                for k, v in interview_user.items():
+                    if k not in ("google", "openai", "presets"):
+                        defaults["interview"][k] = v
+                lang = defaults["interview"].get("lang")
+                if lang in defaults["interview"].get("presets", {}):
+                    _apply_interview_language_preset(defaults, lang)
             if "tts" in user_config and isinstance(user_config["tts"], dict):
                 tts_user = user_config["tts"]
                 if "openai" in tts_user and isinstance(tts_user["openai"], dict):
                     defaults["tts"]["openai"].update(tts_user["openai"])
                 if "google" in tts_user and isinstance(tts_user["google"], dict):
                     defaults["tts"]["google"].update(tts_user["google"])
+                if "lang_presets" in tts_user and isinstance(tts_user["lang_presets"], dict):
+                    # Per-language merge so overriding one engine's voice for one
+                    # language doesn't wipe the other language or the other engine.
+                    for lang, preset in tts_user["lang_presets"].items():
+                        if isinstance(preset, dict):
+                            defaults["tts"]["lang_presets"].setdefault(lang, {}).update(preset)
                 for k, v in tts_user.items():
-                    if k not in ("openai", "google"):
+                    if k not in ("openai", "google", "lang_presets"):
                         defaults["tts"][k] = v
 
     # Backward compatibility: old "voice" key → native_voice
@@ -169,6 +254,10 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Modes:
+  Interactive mode (choose inputs and common settings from menus):
+    %(prog)s -i
+    %(prog)s --interactive
+
   Audio mode (extract target audio from file):
     %(prog)s lesson01.mp3 lesson01.lrc
     %(prog)s lesson01.mp3 lesson01.lrc -o output/echo.m4a
@@ -176,6 +265,9 @@ Modes:
   Text-only mode (generate both target and native via TTS):
     %(prog)s --text phrases.txt
     %(prog)s --text phrases.txt -o output/echo.m4a
+
+  Mock interview mode (Q:/A: text with two role voices):
+    %(prog)s --interview interview.txt
 
   Batch mode (scan a folder for all audio+LRC pairs and/or text files):
     %(prog)s --scan /path/to/lessons
@@ -202,13 +294,21 @@ Modes:
         help="Bilingual text file — text-only mode",
     )
     input_group.add_argument(
+        "--interview", dest="interview_file", default=None,
+        help="Q:/A: mock interview text file — interview mode",
+    )
+    input_group.add_argument(
         "--scan", "-s", dest="scan_dir", default=None,
         help="Folder to scan for batch processing",
     )
 
     parser.add_argument(
-        "--mode", choices=["audio", "text"], default=None,
+        "--mode", choices=["audio", "text", "interview"], default=None,
         help="Force mode (overrides config and auto-detection)",
+    )
+    parser.add_argument(
+        "-i", "--interactive", action="store_true",
+        help="Start an interactive setup menu instead of composing CLI flags",
     )
 
     output_group = parser.add_argument_group("Output paths")
@@ -259,7 +359,15 @@ Modes:
     tts_group.add_argument(
         "--lang", choices=sorted(LANG_PRESETS.keys()), default=None,
         help="Target language preset (ja / en). Sets target voice for "
-             "google + edge engines. Overridden by --target-voice / --google-target-voice.",
+             "google + edge engines, and interview role voices in interview mode. "
+             "Overridden by explicit voice flags.",
+    )
+    tts_group.add_argument(
+        "--interview-lang",
+        choices=sorted(INTERVIEW_LANG_PRESETS.keys()),
+        default=None,
+        help="Interview mode role-voice language preset (ja / en). "
+             "Overrides --lang for interview role voices only.",
     )
     tts_group.add_argument("--target-voice", default=None)
     tts_group.add_argument("--native-voice", default=None)
@@ -271,12 +379,76 @@ Modes:
     tts_group.add_argument("--openai-instructions", default=None)
     tts_group.add_argument("--google-voice", default=None)
     tts_group.add_argument("--google-target-voice", default=None)
+    tts_group.add_argument(
+        "--interviewer-voice", default=None,
+        help="Interview mode edge-tts interviewer voice",
+    )
+    tts_group.add_argument(
+        "--interviewee-voice", default=None,
+        help="Interview mode edge-tts interviewee voice",
+    )
+    tts_group.add_argument(
+        "--google-interviewer-voice", default=None,
+        help="Interview mode Google interviewer voice",
+    )
+    tts_group.add_argument(
+        "--google-interviewee-voice", default=None,
+        help="Interview mode Google interviewee voice",
+    )
+    tts_group.add_argument(
+        "--openai-interviewer-voice", default=None,
+        help="Interview mode OpenAI interviewer voice",
+    )
+    tts_group.add_argument(
+        "--openai-interviewee-voice", default=None,
+        help="Interview mode OpenAI interviewee voice",
+    )
 
     lrc_group = parser.add_argument_group("LRC / text parsing (overrides config)")
     lrc_group.add_argument("--delimiter", default=None)
     lrc_group.add_argument("--split-strategy", choices=["first", "last"], default=None)
 
     return parser.parse_args()
+
+
+def _apply_target_language_preset(config: dict, lang: str) -> None:
+    """Apply the normal target-language preset.
+
+    Voices come from config's `tts.lang_presets` (merged from config.yaml),
+    falling back to the built-in LANG_PRESETS defaults.
+    """
+    presets = config.get("tts", {}).get("lang_presets") or LANG_PRESETS
+    preset = presets.get(lang) or LANG_PRESETS[lang]
+    if preset.get("edge"):
+        config["tts"]["target_voice"] = preset["edge"]
+    if preset.get("google"):
+        config["tts"]["google"]["target_voice"] = preset["google"]
+
+
+def _apply_interview_language_preset(config: dict, lang: str) -> None:
+    """Apply role voice presets for interview mode."""
+    presets = config.get("interview", {}).get("presets", {})
+    preset = presets.get(lang) or INTERVIEW_LANG_PRESETS[lang]
+
+    config["interview"]["lang"] = lang
+    if preset.get("interviewer_voice"):
+        config["interview"]["interviewer_voice"] = preset["interviewer_voice"]
+    if preset.get("interviewee_voice"):
+        config["interview"]["interviewee_voice"] = preset["interviewee_voice"]
+
+    google = preset.get("google", {})
+    if isinstance(google, dict):
+        if google.get("interviewer_voice"):
+            config["interview"]["google"]["interviewer_voice"] = google["interviewer_voice"]
+        if google.get("interviewee_voice"):
+            config["interview"]["google"]["interviewee_voice"] = google["interviewee_voice"]
+
+    openai = preset.get("openai", {})
+    if isinstance(openai, dict):
+        if openai.get("interviewer_voice"):
+            config["interview"]["openai"]["interviewer_voice"] = openai["interviewer_voice"]
+        if openai.get("interviewee_voice"):
+            config["interview"]["openai"]["interviewee_voice"] = openai["interviewee_voice"]
 
 
 def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
@@ -290,6 +462,8 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["paths"]["lrc"] = args.lrc
     if args.text_file:
         config["paths"]["text"] = args.text_file
+    if args.interview_file:
+        config["paths"]["interview"] = args.interview_file
     if args.scan_dir:
         config["paths"]["scan"] = args.scan_dir
     if args.output:
@@ -308,9 +482,10 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["tts"]["engine"] = args.engine
 
     if args.lang:
-        preset = LANG_PRESETS[args.lang]
-        config["tts"]["target_voice"] = preset["edge"]
-        config["tts"]["google"]["target_voice"] = preset["google"]
+        _apply_target_language_preset(config, args.lang)
+        _apply_interview_language_preset(config, args.lang)
+    if args.interview_lang:
+        _apply_interview_language_preset(config, args.interview_lang)
 
     if args.target_voice:
         config["tts"]["target_voice"] = args.target_voice
@@ -335,6 +510,19 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
     if args.google_target_voice:
         config["tts"]["google"]["target_voice"] = args.google_target_voice
 
+    if args.interviewer_voice:
+        config["interview"]["interviewer_voice"] = args.interviewer_voice
+    if args.interviewee_voice:
+        config["interview"]["interviewee_voice"] = args.interviewee_voice
+    if args.google_interviewer_voice:
+        config["interview"]["google"]["interviewer_voice"] = args.google_interviewer_voice
+    if args.google_interviewee_voice:
+        config["interview"]["google"]["interviewee_voice"] = args.google_interviewee_voice
+    if args.openai_interviewer_voice:
+        config["interview"]["openai"]["interviewer_voice"] = args.openai_interviewer_voice
+    if args.openai_interviewee_voice:
+        config["interview"]["openai"]["interviewee_voice"] = args.openai_interviewee_voice
+
     if args.delimiter:
         config["lrc"]["delimiter"] = args.delimiter
     if args.split_strategy:
@@ -354,6 +542,635 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
     return config
 
 
+def _config_has_input(config: dict) -> bool:
+    """Return True when config contains enough input paths to run."""
+    paths = config["paths"]
+    return bool(
+        paths.get("scan")
+        or paths.get("text")
+        or paths.get("interview")
+        or (paths.get("audio") and paths.get("lrc"))
+    )
+
+
+def _safe_input(prompt: str) -> str:
+    """Read interactive input and turn Ctrl-C / EOF into clean exits."""
+    try:
+        return input(prompt)
+    except KeyboardInterrupt:
+        print("\nAborted.")
+        raise SystemExit(130)
+    except EOFError:
+        print("\nInteractive input ended.")
+        raise SystemExit(1)
+
+
+def _prompt_choice(
+    title: str,
+    options: list[tuple[str, str]],
+    default: str | None = None,
+) -> str:
+    """Prompt for a numbered choice and return the option value."""
+    values = {value for value, _ in options}
+    if default is not None and default not in values:
+        default = None
+
+    while True:
+        print()
+        print(title)
+        for idx, (value, label) in enumerate(options, 1):
+            suffix = " [default]" if default == value else ""
+            print(f"  {idx}. {label}{suffix}")
+
+        raw = _safe_input("Choose: ").strip().lower()
+        if not raw and default is not None:
+            return default
+        if raw.isdigit():
+            index = int(raw) - 1
+            if 0 <= index < len(options):
+                return options[index][0]
+        for value, label in options:
+            if raw == value.lower() or raw == label.lower():
+                return value
+        print("Please enter one of the listed numbers.")
+
+
+def _prompt_yes_no(prompt: str, default: bool = True) -> bool:
+    """Prompt for a yes/no answer."""
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    while True:
+        raw = _safe_input(prompt + suffix).strip().lower()
+        if not raw:
+            return default
+        if raw in ("y", "yes"):
+            return True
+        if raw in ("n", "no"):
+            return False
+        print("Please answer y or n.")
+
+
+def _prompt_string(prompt: str, default: str = "", required: bool = False) -> str:
+    """Prompt for a string, preserving a default on empty input."""
+    suffix = f" [{default}]" if default else ""
+    while True:
+        value = _safe_input(f"{prompt}{suffix}: ").strip()
+        if not value:
+            value = default
+        if value or not required:
+            return value
+        print("This value is required.")
+
+
+def _clean_path_input(value: str) -> str:
+    """Normalize common pasted path formats without touching real path spaces."""
+    value = value.replace("\\ ", " ")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    return value
+
+
+def _print_path_suggestions(path: Path, kind: str) -> None:
+    """Print nearby paths when a user input almost matches a real file/folder."""
+    parent = path.parent
+    if not parent.exists() or not parent.is_dir():
+        return
+
+    needle = path.name
+    normalized_needle = needle.strip()
+    suggestions: list[Path] = []
+    for candidate in sorted(parent.iterdir()):
+        if kind == "dir" and not candidate.is_dir():
+            continue
+        if kind == "file" and not candidate.is_file():
+            continue
+        candidate_name = candidate.name
+        if (
+            candidate_name.startswith(needle)
+            or candidate_name.strip() == normalized_needle
+            or (normalized_needle and candidate_name.startswith(normalized_needle))
+        ):
+            suggestions.append(candidate)
+        if len(suggestions) >= 3:
+            break
+
+    if suggestions:
+        print("Did you mean:")
+        for suggestion in suggestions:
+            print(f"  {suggestion}")
+
+
+def _prompt_path(
+    prompt: str,
+    default: str = "",
+    required: bool = True,
+    kind: str = "file",
+) -> str:
+    """Prompt for an existing file or directory path."""
+    while True:
+        value = _clean_path_input(
+            _prompt_string(prompt, default=default, required=required)
+        )
+        if not value:
+            return ""
+
+        path = Path(value).expanduser()
+        if kind == "dir" and not path.is_dir():
+            print(f"Directory not found: {path}")
+            _print_path_suggestions(path, kind)
+            continue
+        if kind == "file" and not path.is_file():
+            print(f"File not found: {path}")
+            _print_path_suggestions(path, kind)
+            continue
+        return str(path)
+
+
+def _prompt_float(prompt: str, default: float) -> float:
+    while True:
+        raw = _prompt_string(prompt, default=str(default), required=True)
+        try:
+            return float(raw)
+        except ValueError:
+            print("Please enter a number.")
+
+
+def _prompt_non_negative_int(prompt: str, default: int) -> int:
+    while True:
+        raw = _prompt_string(prompt, default=str(default), required=True)
+        try:
+            value = int(raw)
+        except ValueError:
+            print("Please enter a whole number.")
+            continue
+        if value >= 0:
+            return value
+        print("Please enter 0 or greater.")
+
+
+def _clear_input_paths(config: dict) -> None:
+    for key in ("scan", "audio", "lrc", "text", "interview", "output", "output_lrc"):
+        config["paths"][key] = ""
+
+
+def _default_interactive_mode(config: dict) -> str:
+    paths = config["paths"]
+    if paths.get("scan"):
+        return "batch"
+    if paths.get("text"):
+        return "text"
+    if paths.get("interview"):
+        return "interview"
+    if paths.get("audio") and paths.get("lrc"):
+        return "audio"
+    return "batch"
+
+
+def _interactive_select_inputs(config: dict) -> None:
+    """Populate config input paths using a small menu."""
+    while True:
+        mode = _prompt_choice(
+            "What do you want to process?",
+            [
+                ("batch", "Batch folder scan"),
+                ("text", "One bilingual text file"),
+                ("interview", "One mock interview Q/A file"),
+                ("audio", "One audio file plus matching LRC"),
+                ("config", "Use input paths already in config.yaml"),
+            ],
+            default=_default_interactive_mode(config),
+        )
+        if mode != "config" or _config_has_input(config):
+            break
+        print("config.yaml does not contain runnable input paths yet.")
+
+    if mode == "batch":
+        default_scan = config["paths"].get("scan", "")
+        _clear_input_paths(config)
+        config["paths"]["scan"] = _prompt_path(
+            "Folder to scan", default=default_scan, kind="dir",
+        )
+        config["mode"] = _prompt_choice(
+            "Which files should the scanner process?",
+            [
+                ("", "Audio+LRC pairs and text files"),
+                ("audio", "Audio+LRC pairs only"),
+                ("text", "Text files only"),
+            ],
+            default=config.get("mode") if config.get("mode") in ("audio", "text") else "text",
+        )
+    elif mode == "text":
+        default_text = config["paths"].get("text", "")
+        _clear_input_paths(config)
+        config["mode"] = "text"
+        config["paths"]["text"] = _prompt_path(
+            "Bilingual text file", default=default_text, kind="file",
+        )
+        config["paths"]["output"] = _prompt_string(
+            "Output audio path (empty = auto)",
+        )
+        if config["paths"]["output"]:
+            config["paths"]["output_lrc"] = _prompt_string(
+                "Output LRC path (empty = same stem as audio)",
+            )
+    elif mode == "interview":
+        default_interview = config["paths"].get("interview", "")
+        _clear_input_paths(config)
+        config["mode"] = "interview"
+        config["paths"]["interview"] = _prompt_path(
+            "Mock interview Q/A text file", default=default_interview, kind="file",
+        )
+        config["paths"]["output"] = _prompt_string(
+            "Output audio path (empty = auto)",
+        )
+        if config["paths"]["output"]:
+            config["paths"]["output_lrc"] = _prompt_string(
+                "Output LRC path (empty = same stem as audio)",
+            )
+    elif mode == "audio":
+        default_audio = config["paths"].get("audio", "")
+        default_lrc = config["paths"].get("lrc", "")
+        _clear_input_paths(config)
+        config["mode"] = "audio"
+        config["paths"]["audio"] = _prompt_path(
+            "Source audio file", default=default_audio, kind="file",
+        )
+        config["paths"]["lrc"] = _prompt_path(
+            "LRC subtitle file", default=default_lrc, kind="file",
+        )
+        config["paths"]["output"] = _prompt_string(
+            "Output audio path (empty = auto)",
+        )
+        if config["paths"]["output"]:
+            config["paths"]["output_lrc"] = _prompt_string(
+                "Output LRC path (empty = same stem as audio)",
+            )
+
+
+def _infer_target_language(config: dict) -> str:
+    """Infer a target language preset from selected input path names."""
+    path_text = " ".join(
+        Path(value).name.lower()
+        for value in config.get("paths", {}).values()
+        if value
+    )
+    if "english" in path_text:
+        return "en"
+    if "japanese" in path_text:
+        return "ja"
+    return ""
+
+
+def _interactive_apply_language(config: dict) -> None:
+    inferred = _infer_target_language(config)
+    current_interview_lang = config.get("interview", {}).get("lang", "")
+    if _is_interview_config(config) and current_interview_lang in INTERVIEW_LANG_PRESETS:
+        inferred = inferred or current_interview_lang
+    language = _prompt_choice(
+        "Target language preset",
+        [
+            ("keep", "Keep current voices from config"),
+            (
+                "ja",
+                "Japanese target"
+                + (" (inferred from input path)" if inferred == "ja" else ""),
+            ),
+            (
+                "en",
+                "English target"
+                + (" (inferred from input path)" if inferred == "en" else ""),
+            ),
+        ],
+        default=inferred or "keep",
+    )
+    if language in LANG_PRESETS:
+        _apply_target_language_preset(config, language)
+        _apply_interview_language_preset(config, language)
+
+
+def _interactive_apply_tts(config: dict) -> None:
+    engine = _prompt_choice(
+        "TTS engine",
+        [
+            ("google", "Google Cloud TTS (stable, paid)"),
+            ("edge", "edge-tts (free)"),
+            ("openai", "OpenAI TTS (best for math / symbols, paid)"),
+        ],
+        default=config["tts"].get("engine", "google"),
+    )
+    config["tts"]["engine"] = engine
+
+    if engine == "openai" and not _is_interview_config(config):
+        current_voice = config["tts"]["openai"].get("voice", "coral")
+        if current_voice not in OPENAI_VOICES:
+            current_voice = "coral"
+        config["tts"]["openai"]["voice"] = _prompt_choice(
+            "OpenAI voice",
+            [(voice, voice) for voice in OPENAI_VOICES],
+            default=current_voice,
+        )
+
+
+def _is_interview_config(config: dict) -> bool:
+    return bool(config.get("paths", {}).get("interview"))
+
+
+def _config_for_interview_role(config: dict, role: str) -> dict:
+    """Return config with the target TTS voice set for one interview role."""
+    interview = config.get("interview", {})
+    c = copy.deepcopy(config)
+    is_answer = role == "a"
+
+    edge_key = "interviewee_voice" if is_answer else "interviewer_voice"
+    c["tts"]["target_voice"] = interview.get(edge_key) or c["tts"]["target_voice"]
+
+    google = interview.get("google", {})
+    google_key = "interviewee_voice" if is_answer else "interviewer_voice"
+    c["tts"]["google"]["target_voice"] = (
+        google.get(google_key) or c["tts"]["google"]["target_voice"]
+    )
+
+    openai = interview.get("openai", {})
+    openai_key = "interviewee_voice" if is_answer else "interviewer_voice"
+    c["tts"]["openai"]["target_voice"] = (
+        openai.get(openai_key) or c["tts"]["openai"].get("target_voice", "")
+    )
+    return c
+
+
+def _interactive_apply_interview_voices(config: dict) -> None:
+    """Let interview mode customize its two speaker voices."""
+    if not _is_interview_config(config):
+        return
+
+    if not _prompt_yes_no("Customize interview role voices?", default=False):
+        return
+
+    engine = config["tts"]["engine"]
+    if engine == "google":
+        google = config["interview"]["google"]
+        google["interviewer_voice"] = _prompt_string(
+            "Google interviewer voice",
+            google["interviewer_voice"],
+            required=True,
+        )
+        google["interviewee_voice"] = _prompt_string(
+            "Google interviewee voice",
+            google["interviewee_voice"],
+            required=True,
+        )
+    elif engine == "edge":
+        config["interview"]["interviewer_voice"] = _prompt_string(
+            "edge interviewer voice",
+            config["interview"]["interviewer_voice"],
+            required=True,
+        )
+        config["interview"]["interviewee_voice"] = _prompt_string(
+            "edge interviewee voice",
+            config["interview"]["interviewee_voice"],
+            required=True,
+        )
+    elif engine == "openai":
+        openai = config["interview"]["openai"]
+        openai["interviewer_voice"] = _prompt_choice(
+            "OpenAI interviewer voice",
+            [(voice, voice) for voice in OPENAI_VOICES],
+            default=openai["interviewer_voice"],
+        )
+        openai["interviewee_voice"] = _prompt_choice(
+            "OpenAI interviewee voice",
+            [(voice, voice) for voice in OPENAI_VOICES],
+            default=openai["interviewee_voice"],
+        )
+
+
+def _interactive_apply_loop(config: dict) -> None:
+    loop_choice = _prompt_choice(
+        "Loop pattern",
+        [
+            ("keep", f"Keep current ({_loop_label(config)})"),
+            ("full", "Full: 1 T-N-T pass"),
+            ("progressive", "Progressive: 1 T-N-T + 1 T-S-T pass"),
+            ("shadow", "Shadow: 1 T-S-T pass"),
+            ("custom", "Custom repeat counts"),
+        ],
+        default="keep",
+    )
+    if loop_choice == "keep":
+        return
+    if loop_choice == "custom":
+        config["loop"]["variant"] = "full"
+        config["loop"]["tnt_repeats"] = _prompt_non_negative_int(
+            "T-N-T repeats per segment", 1,
+        )
+        config["loop"]["tst_repeats"] = _prompt_non_negative_int(
+            "T-S-T repeats per segment", 1,
+        )
+        if (
+            config["loop"]["tnt_repeats"] == 0
+            and config["loop"]["tst_repeats"] == 0
+        ):
+            print("Both repeat counts cannot be 0; using 1 T-N-T pass.")
+            config["loop"]["tnt_repeats"] = 1
+        return
+
+    config["loop"]["variant"] = loop_choice
+    config["loop"]["tnt_repeats"] = None
+    config["loop"]["tst_repeats"] = None
+
+
+def _interactive_apply_split_outputs(config: dict) -> None:
+    current = "yes" if _split_enabled(config) else "no"
+    choice = _prompt_choice(
+        "Output layout",
+        [
+            ("keep", f"Keep current ({'split' if current == 'yes' else 'single file'})"),
+            ("yes", "Split into _tnt and _tst files"),
+            ("no", "Single combined Echo Loop file"),
+        ],
+        default="keep",
+    )
+    if choice != "keep":
+        config["loop"]["split_outputs"] = choice == "yes"
+
+
+def _interactive_apply_advanced(config: dict) -> None:
+    if not _prompt_yes_no("Adjust advanced settings?", default=False):
+        return
+
+    print()
+    print("Timing")
+    config["timing"]["after_first_target"] = _prompt_float(
+        "Silence after first target (seconds)",
+        config["timing"]["after_first_target"],
+    )
+    config["timing"]["after_native"] = _prompt_float(
+        "Silence after native audio (seconds)",
+        config["timing"]["after_native"],
+    )
+    config["timing"]["after_second_target"] = _prompt_float(
+        "Silence after second target / loop gap (seconds)",
+        config["timing"]["after_second_target"],
+    )
+
+    volume = _prompt_choice(
+        "TTS volume",
+        [
+            ("keep", f"Keep current ({_volume_label(config)})"),
+            ("none", "No gain / normalization"),
+            ("gain", "Set fixed gain in dB"),
+            ("normalize", "Normalize clips to target dBFS"),
+        ],
+        default="keep",
+    )
+    if volume == "none":
+        config["tts"]["gain"] = 0
+        config["tts"]["normalize"] = None
+    elif volume == "gain":
+        config["tts"]["gain"] = _prompt_float("Gain in dB", config["tts"]["gain"])
+        config["tts"]["normalize"] = None
+    elif volume == "normalize":
+        default = config["tts"]["normalize"]
+        config["tts"]["normalize"] = _prompt_float(
+            "Target dBFS", -20.0 if default is None else default,
+        )
+
+    engine = config["tts"]["engine"]
+    if _is_interview_config(config):
+        if engine == "openai" and _prompt_yes_no(
+            "Customize OpenAI instructions?", default=False,
+        ):
+            config["tts"]["openai"]["instructions"] = _prompt_string(
+                "OpenAI instructions",
+                config["tts"]["openai"].get("instructions", ""),
+            )
+    elif engine == "google":
+        if _prompt_yes_no("Customize Google voices?", default=False):
+            config["tts"]["google"]["target_voice"] = _prompt_string(
+                "Google target voice",
+                config["tts"]["google"]["target_voice"],
+                required=True,
+            )
+            config["tts"]["google"]["native_voice"] = _prompt_string(
+                "Google native voice",
+                config["tts"]["google"]["native_voice"],
+                required=True,
+            )
+    elif engine == "edge":
+        if _prompt_yes_no("Customize edge-tts voices?", default=False):
+            config["tts"]["target_voice"] = _prompt_string(
+                "edge target voice", config["tts"]["target_voice"], required=True,
+            )
+            config["tts"]["native_voice"] = _prompt_string(
+                "edge native voice", config["tts"]["native_voice"], required=True,
+            )
+            config["tts"]["rate"] = _prompt_string(
+                "edge rate", config["tts"]["rate"], required=True,
+            )
+    elif engine == "openai":
+        if _prompt_yes_no("Customize OpenAI instructions?", default=False):
+            config["tts"]["openai"]["instructions"] = _prompt_string(
+                "OpenAI instructions",
+                config["tts"]["openai"].get("instructions", ""),
+            )
+
+    if _prompt_yes_no("Customize LRC/text delimiter?", default=False):
+        config["lrc"]["delimiter"] = _prompt_string(
+            "Delimiter", config["lrc"]["delimiter"], required=True,
+        )
+        config["lrc"]["split_strategy"] = _prompt_choice(
+            "Split strategy",
+            [("last", "Split on last delimiter"), ("first", "Split on first delimiter")],
+            default=config["lrc"]["split_strategy"],
+        )
+
+
+def _interactive_mode_label(config: dict) -> str:
+    if config["paths"].get("scan"):
+        mode_filter = config.get("mode", "").strip().lower()
+        if mode_filter in ("audio", "text"):
+            return f"batch ({mode_filter} only)"
+        return "batch (audio+LRC pairs and text files)"
+    mode = _interactive_single_file_mode(config)
+    if mode == "text":
+        return "text"
+    if mode == "interview":
+        return "interview"
+    if mode == "audio":
+        return "audio"
+    return "config-only"
+
+
+def _interactive_single_file_mode(config: dict) -> str:
+    paths = config["paths"]
+    forced = config.get("mode", "").strip().lower()
+    has_audio = bool(paths.get("audio")) and bool(paths.get("lrc"))
+    has_text = bool(paths.get("text"))
+    has_interview = bool(paths.get("interview"))
+
+    if forced == "audio" and has_audio:
+        return "audio"
+    if forced == "text" and has_text:
+        return "text"
+    if forced == "interview" and has_interview:
+        return "interview"
+    if has_audio:
+        return "audio"
+    if has_text:
+        return "text"
+    if has_interview:
+        return "interview"
+    return ""
+
+
+def _print_interactive_summary(config: dict) -> None:
+    print()
+    print("Run summary")
+    print(f"  Mode:        {_interactive_mode_label(config)}")
+    if config["paths"].get("scan"):
+        print(f"  Scan folder: {config['paths']['scan']}")
+    if config["paths"].get("text"):
+        print(f"  Text file:   {config['paths']['text']}")
+    if config["paths"].get("interview"):
+        print(f"  Interview:   {config['paths']['interview']}")
+    if config["paths"].get("audio"):
+        print(f"  Audio file:  {config['paths']['audio']}")
+    if config["paths"].get("lrc"):
+        print(f"  LRC file:    {config['paths']['lrc']}")
+    single_mode = _interactive_single_file_mode(config)
+    if single_mode:
+        mode = single_mode
+        audio_out, lrc_out = resolve_output_paths(config, mode)
+        print(f"  Output:      {audio_out}")
+        print(f"  Output LRC:  {lrc_out}")
+    print(f"  Engine:      {_engine_label(config)}")
+    print(f"  Loop:        {_loop_label(config)}")
+    print(f"  Volume:      {_volume_label(config)}")
+    print()
+
+
+def interactive_setup(config: dict) -> dict:
+    """Collect a runnable configuration from an interactive menu."""
+    config = copy.deepcopy(config)
+
+    print()
+    print("Echo Loop Generator - interactive setup")
+    print("Press Enter to accept defaults shown in brackets.")
+
+    _interactive_select_inputs(config)
+    _interactive_apply_language(config)
+    _interactive_apply_tts(config)
+    _interactive_apply_interview_voices(config)
+    _interactive_apply_loop(config)
+    _interactive_apply_split_outputs(config)
+    _interactive_apply_advanced(config)
+    _print_interactive_summary(config)
+
+    if not _prompt_yes_no("Run now?", default=True):
+        raise SystemExit(0)
+
+    return config
+
+
 def resolve_mode(config: dict) -> str:
     """Determine which mode to run."""
     paths = config["paths"]
@@ -364,13 +1181,17 @@ def resolve_mode(config: dict) -> str:
     mode = config.get("mode", "").strip().lower()
     has_audio = bool(paths.get("audio")) and bool(paths.get("lrc"))
     has_text = bool(paths.get("text"))
+    has_interview = bool(paths.get("interview"))
 
-    if mode in ("audio", "text"):
+    if mode in ("audio", "text", "interview"):
         if mode == "audio" and not has_audio:
             logger.error("audio mode requires 'audio' and 'lrc' paths")
             sys.exit(1)
         if mode == "text" and not has_text:
             logger.error("text mode requires 'text' path")
+            sys.exit(1)
+        if mode == "interview" and not has_interview:
+            logger.error("interview mode requires 'interview' path")
             sys.exit(1)
         return mode
 
@@ -378,9 +1199,12 @@ def resolve_mode(config: dict) -> str:
         return "audio"
     if has_text:
         return "text"
+    if has_interview:
+        return "interview"
 
     logger.error(
-        "no input specified. Provide audio+lrc, --text, or --scan via CLI or config.yaml"
+        "no input specified. Provide audio+lrc, --text, --interview, "
+        "or --scan via CLI or config.yaml"
     )
     sys.exit(1)
 
@@ -392,6 +1216,9 @@ def resolve_output_paths(config: dict, mode: str) -> tuple[Path, Path]:
 
     if paths.get("output"):
         audio_out = Path(paths["output"])
+    elif mode == "interview" and paths.get("interview"):
+        stem = Path(paths["interview"]).stem
+        audio_out = Path(paths["interview"]).parent / f"{stem}_echo.{ext}"
     elif mode == "text" and paths.get("text"):
         stem = Path(paths["text"]).stem
         audio_out = Path(paths["text"]).parent / f"{stem}_echo.{ext}"
@@ -433,8 +1260,38 @@ def _volume_label(config: dict) -> str:
 
 def _engine_label(config: dict) -> str:
     engine = config["tts"]["engine"]
+    if _is_interview_config(config):
+        interview = config["interview"]
+        if engine == "openai":
+            oai = config["tts"]["openai"]
+            role_voices = interview["openai"]
+            return (
+                f"openai ({oai['model']}, "
+                f"interviewer={role_voices['interviewer_voice']}, "
+                f"interviewee={role_voices['interviewee_voice']}, "
+                f"native={oai.get('native_voice') or oai['voice']})"
+            )
+        if engine == "google":
+            role_voices = interview["google"]
+            return (
+                f"google (interviewer={role_voices['interviewer_voice']}, "
+                f"interviewee={role_voices['interviewee_voice']}, "
+                f"native={config['tts']['google']['native_voice']})"
+            )
+        return (
+            f"edge-tts (interviewer={interview['interviewer_voice']}, "
+            f"interviewee={interview['interviewee_voice']}, "
+            f"native={config['tts']['native_voice']})"
+        )
+
     if engine == "openai":
         oai = config["tts"]["openai"]
+        if oai.get("target_voice") or oai.get("native_voice"):
+            return (
+                f"openai ({oai['model']}, "
+                f"target={oai.get('target_voice') or oai['voice']}, "
+                f"native={oai.get('native_voice') or oai['voice']})"
+            )
         return f"openai ({oai['model']}, voice={oai['voice']})"
     if engine == "google":
         g = config["tts"]["google"]
@@ -474,7 +1331,9 @@ def resolve_split_output_paths(config: dict, mode: str) -> tuple[Path, Path, Pat
     """Compute split output paths for single-file modes (audio / text)."""
     paths = config["paths"]
     ext = config["output"]["format"]
-    if mode == "text" and paths.get("text"):
+    if mode == "interview" and paths.get("interview"):
+        source = Path(paths["interview"])
+    elif mode == "text" and paths.get("text"):
         source = Path(paths["text"])
     elif mode == "audio" and paths.get("audio"):
         source = Path(paths["audio"])
@@ -793,6 +1652,131 @@ def run_text_mode(config: dict) -> None:
         detach_folder_log()
 
 
+def _generate_interview_target_audio(
+    segments,
+    config: dict,
+    work_dir: Path,
+    vol_kwargs: dict,
+) -> list:
+    """Generate target-language clips with interviewer/interviewee voices by role."""
+    target_audios = [None] * len(segments)
+    role_labels = {"q": "interviewer", "a": "interviewee"}
+
+    for role, label in role_labels.items():
+        indexed_segments = [
+            (idx, seg)
+            for idx, seg in enumerate(segments)
+            if getattr(seg, "role", "") == role
+        ]
+        if not indexed_segments:
+            continue
+
+        role_config = _config_for_interview_role(config, role)
+        role_segments = [seg for _, seg in indexed_segments]
+        role_audios = generate_target_audio(
+            role_segments,
+            voice=role_config["tts"]["target_voice"],
+            rate=role_config["tts"]["rate"],
+            pitch=role_config["tts"]["pitch"],
+            work_dir=work_dir / label,
+            **vol_kwargs,
+            **_tts_engine_kwargs(role_config),
+        )
+        for (original_idx, _), audio in zip(indexed_segments, role_audios):
+            target_audios[original_idx] = audio
+
+    missing = [idx for idx, audio in enumerate(target_audios) if audio is None]
+    if missing:
+        raise RuntimeError(f"Missing interview target audio for segments: {missing}")
+
+    return target_audios
+
+
+def run_interview_mode(config: dict) -> None:
+    """Interview mode: generate Q/A mock interview audio via two TTS voices."""
+    interview_path = Path(config["paths"]["interview"])
+    output_path, lrc_output_path = resolve_output_paths(config, "interview")
+
+    timing = EchoTiming(
+        after_first_target=config["timing"]["after_first_target"],
+        after_native=config["timing"]["after_native"],
+        after_second_target=config["timing"]["after_second_target"],
+    )
+
+    vol_kwargs = _tts_volume_kwargs(config)
+    eng_kwargs = _tts_engine_kwargs(config)
+
+    folder_log = attach_folder_log(interview_path.parent)
+    try:
+        logger.info("=" * 60)
+        logger.info("  Echo Loop Generator — Mock Interview Mode")
+        logger.info("  English → S → Chinese → S → English → S")
+        logger.info("=" * 60)
+        logger.info(f"  Interview:  {interview_path}")
+        logger.info(f"  Output:     {output_path}")
+        logger.info(f"  Output LRC: {lrc_output_path}")
+        logger.info(f"  Timing:     {timing.after_first_target}s / "
+                    f"{timing.after_native}s / {timing.after_second_target}s")
+        logger.info(f"  TTS Engine: {_engine_label(config)}")
+        logger.info(f"  TTS Volume: {_volume_label(config)}")
+        logger.info(f"  Loop:       {_loop_label(config)}")
+        if folder_log:
+            logger.info(f"  Folder log: {folder_log}")
+        central_log = get_central_log_path()
+        if central_log:
+            logger.info(f"  Central log: {central_log}")
+        logger.info("=" * 60)
+
+        start = time.monotonic()
+
+        logger.info("[1/4] Parsing interview file...")
+        segments = parse_interview_text(
+            interview_path,
+            delimiter=config["lrc"]["delimiter"],
+            split_strategy=config["lrc"]["split_strategy"],
+        )
+        q_count = sum(1 for seg in segments if getattr(seg, "role", "") == "q")
+        a_count = sum(1 for seg in segments if getattr(seg, "role", "") == "a")
+        logger.info(f"  Found {len(segments)} interview lines ({q_count} Q, {a_count} A)")
+        for seg in segments[:3]:
+            prefix = "Q" if getattr(seg, "role", "") == "q" else "A"
+            logger.info(f"    {prefix}: {seg.target_text[:40]}...")
+            logger.info(f"    N: {seg.native_text[:40]}...")
+        if len(segments) > 3:
+            logger.info(f"    ... and {len(segments) - 3} more")
+
+        work_dir = Path(tempfile.mkdtemp(prefix="echo_interview_"))
+
+        logger.info("[2/4] Generating role-based English TTS audio...")
+        target_audios = _generate_interview_target_audio(
+            segments, config, work_dir, vol_kwargs,
+        )
+        logger.info(f"  Generated {len(target_audios)} English TTS clips")
+
+        logger.info("[3/4] Generating native translation TTS audio...")
+        native_audios = generate_native_audio(
+            segments,
+            voice=config["tts"]["native_voice"],
+            rate=config["tts"]["rate"],
+            pitch=config["tts"]["pitch"],
+            work_dir=work_dir,
+            **vol_kwargs,
+            **eng_kwargs,
+        )
+        logger.info(f"  Generated {len(native_audios)} native TTS clips")
+
+        logger.info("[4/4] Assembling and exporting...")
+        _assemble_and_export(
+            segments, target_audios, native_audios,
+            timing, config, output_path, lrc_output_path, work_dir,
+        )
+
+        elapsed = time.monotonic() - start
+        logger.info(f"  Total time: {elapsed:.1f}s")
+    finally:
+        detach_folder_log()
+
+
 def run_batch_mode(config: dict) -> None:
     """Batch mode: scan a folder and process all matching files."""
     scan_path = Path(config["paths"]["scan"])
@@ -940,10 +1924,12 @@ def _config_for_item(config: dict, item: ScanItem) -> dict:
         c["paths"]["audio"] = str(item.audio_path)
         c["paths"]["lrc"] = str(item.lrc_path)
         c["paths"]["text"] = ""
+        c["paths"]["interview"] = ""
     else:
         c["paths"]["text"] = str(item.text_path)
         c["paths"]["audio"] = ""
         c["paths"]["lrc"] = ""
+        c["paths"]["interview"] = ""
 
     c["paths"]["output"] = ""
     c["paths"]["output_lrc"] = ""
@@ -1058,6 +2044,9 @@ def main():
     config = load_config(args.config)
     config = apply_cli_overrides(config, args)
 
+    if args.interactive or (sys.stdin.isatty() and not _config_has_input(config)):
+        config = interactive_setup(config)
+
     setup_logging()
 
     try:
@@ -1065,6 +2054,8 @@ def main():
 
         if mode == "batch":
             run_batch_mode(config)
+        elif mode == "interview":
+            run_interview_mode(config)
         elif mode == "text":
             run_text_mode(config)
         else:

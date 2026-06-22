@@ -14,6 +14,7 @@ paths:
   audio: ""              # source audio file — audio mode (mp3, wav, m4a, etc.)
   lrc: ""                # LRC subtitle file — audio mode
   text: ""               # bilingual text file — text-only mode
+  interview: ""          # Q:/A: mock interview text file — interview mode
   output: ""             # output audio file (default: <input_name>_echo.<format>)
   output_lrc: ""         # output LRC file (default: same as output with .lrc)
 
@@ -44,10 +45,26 @@ tts:
     speaking_rate: 1.0                         # 0.25 to 4.0
     pitch: 0.0                                 # -20.0 to 20.0 semitones (ignored by Chirp3-HD; must be 0.0)
 
+  # --- Target-language voice presets (used by --lang ja / --lang en) ---
+  # `--lang ja` / `--lang en` picks the target voice from here, per engine.
+  # IMPORTANT: Google Chirp3-HD persona names (Charon, Puck, Kore, ...) keep the
+  # same timbre across languages, so to make English and Japanese sound like
+  # DIFFERENT speakers, give each language a different persona below.
+  # Explicit --target-voice / --google-target-voice still override these.
+  lang_presets:
+    ja:
+      google: "ja-JP-Chirp3-HD-Charon"        # Japanese — male persona
+      edge:   "ja-JP-NanamiNeural"
+    en:
+      google: "en-US-Chirp3-HD-Puck"          # English — distinct persona from ja
+      edge:   "en-US-JennyNeural"
+
   # --- OpenAI TTS settings (used when engine: "openai") ---
   openai:
     model: "gpt-4o-mini-tts"
     voice: "coral"                     # alloy, ash, ballad, cedar, coral, echo, fable, nova, onyx, sage, shimmer, verse
+    target_voice: ""                   # optional role-specific override (used by interview mode)
+    native_voice: ""                   # optional role-specific override (used by interview mode)
     speed: 1.0                         # 0.25 to 4.0
     # instructions: natural language prompt controlling how the model speaks.
     # This is where the magic happens for math — tell it to read formulas naturally.
@@ -102,3 +119,44 @@ loop:
   # T-N-T passes, {stem}_tst.{ext} contains only the T-S-T passes. TTS is
   # generated once and shared between both files (no extra API cost).
   split_outputs: true
+
+interview:
+  # Default interview target language preset. CLI `--lang ja` or
+  # `--interview-lang ja` can switch this per run.
+  lang: "en"
+
+  # Interview mode reads bilingual lines like:
+  #   Q:What would you improve next?|||接下来你会改进什么？
+  #   A:I would improve replay tooling.|||我会改进 replay 工具。
+  # Q/Interviewer target text uses interviewer_voice; A/Candidate target text
+  # uses interviewee_voice. These active voices are populated from
+  # interview.presets[lang] at runtime. Chinese translation audio still uses
+  # tts.native_voice / tts.google.native_voice / tts.openai.voice.
+  interviewer_voice: "en-US-GuyNeural"       # edge-tts interviewer
+  interviewee_voice: "en-US-JennyNeural"     # edge-tts interviewee
+  google:
+    interviewer_voice: "en-US-Chirp3-HD-Charon"
+    interviewee_voice: "en-US-Chirp3-HD-Kore"
+  openai:
+    interviewer_voice: "echo"
+    interviewee_voice: "coral"
+
+  presets:
+    en:
+      interviewer_voice: "en-US-GuyNeural"
+      interviewee_voice: "en-US-JennyNeural"
+      google:
+        interviewer_voice: "en-US-Chirp3-HD-Charon"
+        interviewee_voice: "en-US-Chirp3-HD-Kore"
+      openai:
+        interviewer_voice: "echo"
+        interviewee_voice: "coral"
+    ja:
+      interviewer_voice: "ja-JP-KeitaNeural"
+      interviewee_voice: "ja-JP-NanamiNeural"
+      google:
+        interviewer_voice: "ja-JP-Chirp3-HD-Charon"
+        interviewee_voice: "ja-JP-Chirp3-HD-Kore"
+      openai:
+        interviewer_voice: "echo"
+        interviewee_voice: "coral"
