@@ -1,0 +1,31 @@
+services:
+  echo-web:
+    # Pulled from Docker Hub by CI/CD (GitHub Actions builds + pushes on every
+    # push to main). For local development you can still build it yourself with
+    # `docker compose up -d --build`.
+    image: sudami/echo_english:latest
+    build: .
+    container_name: echo-loop-web
+    restart: unless-stopped
+    # Port mapping. Behind Tailscale, the safest setup is to firewall the public
+    # interface (e.g. `ufw default deny incoming` + `ufw allow in on tailscale0`)
+    # and keep the bind below. Alternatively pin to the tailscale IP:
+    #   ports: ["100.x.y.z:8080:8080"]
+    ports:
+      - "${HOST_BIND:-0.0.0.0}:${PORT:-8080}:8080"
+    environment:
+      # Google Cloud TTS credentials (mounted read-only below).
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/google-credentials.json
+      # Where generated jobs are stored (mounted as a volume for persistence).
+      ECHO_OUTPUT_DIR: /data/outputs
+      # Optional shared secret. Leave empty on a private tailnet, or set it for
+      # an extra layer. When set, the UI asks for it under ⚙️.
+      ECHO_WEB_TOKEN: "${ECHO_WEB_TOKEN:-}"
+      # Optional: OpenAI engine.
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      BIND_ADDR: 0.0.0.0
+      PORT: 8080
+    volumes:
+      - ./outputs:/data/outputs
+      - ./google-credentials.json:/secrets/google-credentials.json:ro
+      - ./config.yaml:/app/config.yaml:ro

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1117" />
+  <title>Echo Loop 生成器</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <h1>🔁 Echo Loop</h1>
+      <button id="settingsBtn" class="icon-btn" title="设置" aria-label="设置">⚙️</button>
+    </header>
+
+    <section id="settingsPanel" class="panel hidden">
+      <label class="field">
+        <span>访问令牌 (服务端设了 ECHO_WEB_TOKEN 时填写)</span>
+        <input id="tokenInput" type="password" placeholder="留空表示无需令牌" autocomplete="off" />
+      </label>
+      <button id="saveToken" class="btn ghost">保存令牌</button>
+    </section>
+
+    <!-- Input -->
+    <section class="panel">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-mode="text" role="tab">文本</button>
+        <button class="tab" data-mode="interview" role="tab">面试稿</button>
+      </div>
+
+      <textarea id="content" rows="9" spellcheck="false"
+        placeholder="每行一条：目标语言|||中文翻译&#10;例如：&#10;これはテストです|||这是一个测试&#10;水を飲みます|||我喝水"></textarea>
+      <p id="formatHint" class="hint">格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。</p>
+
+      <!-- Options -->
+      <details class="options">
+        <summary>选项</summary>
+
+        <div class="grid">
+          <label class="field">
+            <span>目标语言</span>
+            <select id="lang">
+              <option value="">（用配置默认）</option>
+              <option value="ja">日语</option>
+              <option value="en">英语</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>TTS 引擎</span>
+            <select id="engine">
+              <option value="google">Google（稳定 / 付费）</option>
+              <option value="edge">edge-tts（免费）</option>
+              <option value="openai">OpenAI（数学符号）</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>循环模式</span>
+            <select id="variant">
+              <option value="">（用配置默认）</option>
+              <option value="full">Full：1×T-N-T</option>
+              <option value="progressive">Progressive：1×T-N-T + 1×T-S-T</option>
+              <option value="shadow">Shadow：1×T-S-T</option>
+              <option value="custom">自定义次数…</option>
+            </select>
+          </label>
+
+          <div id="customRepeats" class="field-row hidden">
+            <label class="field">
+              <span>T-N-T 次数</span>
+              <input id="tnt" type="number" min="0" max="9" value="1" />
+            </label>
+            <label class="field">
+              <span>T-S-T 次数</span>
+              <input id="tst" type="number" min="0" max="9" value="1" />
+            </label>
+          </div>
+
+          <label class="field checkbox">
+            <input id="split" type="checkbox" />
+            <span>拆成 _tnt 和 _tst 两个文件</span>
+          </label>
+
+          <label class="field">
+            <span>音量增益 (dB，空=配置默认)</span>
+            <input id="gain" type="number" step="1" placeholder="例如 -6" />
+          </label>
+        </div>
+
+        <details class="options nested">
+          <summary>停顿时长（秒）</summary>
+          <div class="field-row">
+            <label class="field"><span>首遍目标后</span><input id="t1" type="number" step="0.1" placeholder="0.8" /></label>
+            <label class="field"><span>母语后</span><input id="t2" type="number" step="0.1" placeholder="0.5" /></label>
+            <label class="field"><span>次遍/循环间隔</span><input id="t3" type="number" step="0.1" placeholder="1.2" /></label>
+          </div>
+        </details>
+      </details>
+
+      <button id="generateBtn" class="btn primary">生成音频</button>
+      <div id="error" class="error hidden"></div>
+    </section>
+
+    <!-- History -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>历史</h2>
+        <button id="refreshBtn" class="btn ghost small">刷新</button>
+      </div>
+      <div id="history" class="history"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

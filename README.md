@@ -16,6 +16,33 @@ You can also repeat each segment as multiple T-N-T passes followed by multiple T
 
 This structure uses the reflex energy of your native language to ignite comprehension of the target language — not through translation, but through resonance.
 
+## Web UI / Self-host
+
+Prefer to generate audio from your phone instead of the CLI? There's a small
+mobile-friendly web UI that wraps the **text** and **interview** modes. Paste
+bilingual text, tap generate, and play/download the resulting `.m4a` + `.lrc`
+right in the browser.
+
+Run it locally:
+
+```bash
+pip install -r requirements-web.txt
+uvicorn webapp.server:app --host 0.0.0.0 --port 8080
+# open http://localhost:8080
+```
+
+Or deploy to a VPS with Docker Compose (Google Cloud TTS + Tailscale access).
+The image is built and pushed to Docker Hub by GitHub Actions on every push to
+`main`, and rolled out to the VPS over SSH — so the VPS just pulls and runs:
+
+```bash
+cp /path/to/service-account.json ./google-credentials.json
+docker compose pull && docker compose up -d
+```
+
+Full deployment + CI/CD guide (Tailscale, firewall, GitHub Actions secrets,
+optional token auth): [docs/deploy_vps.md](docs/deploy_vps.md).
+
 ## Three TTS Engines
 
 The generator supports three TTS engines, selectable per run via config or CLI:

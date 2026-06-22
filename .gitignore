@@ -6,6 +6,9 @@
 /google-credentials.json
 /*-credentials.json
 /logs/
+/outputs/
 /.claude/
+.idea/
+.DS_Store
 __pycache__/
 *.pyc
