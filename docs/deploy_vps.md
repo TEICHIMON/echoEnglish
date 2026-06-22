@@ -64,55 +64,59 @@ The app listens on port **8080**. Verify locally on the VPS:
 curl http://localhost:8080/healthz   # -> {"ok": true}
 ```
 
-## 4. Reach it from your phone via Tailscale
+## 4. Put it behind Caddy (HTTPS on your domain)
 
-On the VPS:
+The container binds to `127.0.0.1:8080` only, so it is not reachable from the
+public internet directly — only the host's Caddy can reach it. Add a site block
+to your Caddyfile (usually `/etc/caddy/Caddyfile`):
+
+```caddyfile
+echo.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Reload Caddy and open the site:
 
 ```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-tailscale ip -4            # note the 100.x.y.z address
+sudo systemctl reload caddy
+# then browse to https://echo.example.com  (Caddy gets the TLS cert automatically)
 ```
 
-Install Tailscale on your phone, sign into the same tailnet, then open:
-
-```
-http://<vps-tailscale-ip>:8080
-```
-
-### Lock down the public interface
-
-Tailscale gives you private access, but the published port is still bound to
-all interfaces by default. Firewall the public side:
+Make sure the firewall allows Caddy's ports (and SSH for CI deploys):
 
 ```bash
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow in on tailscale0      # allow tailnet traffic
-sudo ufw allow 22                    # keep SSH (or also restrict to tailscale0)
-sudo ufw enable
+sudo ufw allow 80
+sudo ufw allow 443
+sudo ufw allow 22
 ```
 
-Alternatively, bind the port only to the tailscale IP by editing
-`docker-compose.yml`:
+### Gate the public site (recommended)
 
-```yaml
-ports:
-  - "100.x.y.z:8080:8080"
-```
+A public domain is reachable by anyone — add a login. Either option works; the
+audio `<audio>` element keeps playing because the browser resends credentials.
 
-### Optional: shared-secret token
-
-For an extra layer (e.g. if others share the tailnet), set a token:
+**Option A — Caddy basic auth** (handled at the proxy, before the app):
 
 ```bash
-# in .env
-ECHO_WEB_TOKEN=some-long-random-string
-docker compose up -d
+caddy hash-password         # type a password, copy the bcrypt hash it prints
 ```
 
-Then enter it once in the UI under the ⚙️ panel — it is stored in the browser
-and sent with every request.
+```caddyfile
+echo.example.com {
+    reverse_proxy 127.0.0.1:8080
+    basic_auth {              # `basicauth` on Caddy < 2.8
+        yourname JDJhJDE0...<bcrypt-hash>
+    }
+}
+```
+
+**Option B — app token** instead of Caddy auth: set `ECHO_WEB_TOKEN` in `.env`,
+`docker compose up -d`, then enter it once in the UI under the ⚙️ panel.
+
+> **Alternative to Caddy:** if you'd rather keep it private with no domain, run
+> Tailscale on the VPS and phone, set `HOST_BIND` to the tailscale IP, and
+> browse `http://<tailscale-ip>:8080`.
 
 ## 5. Auto-deploy with GitHub Actions
 
