@@ -29,6 +29,13 @@
         <button class="tab" data-mode="interview" role="tab">面试稿</button>
       </div>
 
+      <details class="options promptbox" id="promptBox">
+        <summary>📋 让 AI 帮你写文字稿（复制提示词）</summary>
+        <p class="hint">复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页和「目标语言」自动调整。</p>
+        <pre id="promptText" class="prompt-text"></pre>
+        <button id="copyPromptBtn" class="btn ghost small" type="button">复制提示词</button>
+      </details>
+
       <textarea id="content" rows="9" spellcheck="false"
         placeholder="每行一条：目标语言|||中文翻译&#10;例如：&#10;これはテストです|||这是一个测试&#10;水を飲みます|||我喝水"></textarea>
       <p id="formatHint" class="hint">格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。</p>

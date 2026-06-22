@@ -26,7 +26,7 @@ import time
 import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from main import (
@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = os.environ.get("ECHO_CONFIG", str(PROJECT_ROOT / "config.yaml"))
 OUTPUT_DIR = Path(os.environ.get("ECHO_OUTPUT_DIR", str(PROJECT_ROOT / "outputs"))).resolve()
+
+# Optional retention. Both default to 0 = keep everything forever (no cleanup).
+#   ECHO_RETENTION_DAYS — delete finished jobs older than N days
+#   ECHO_MAX_JOBS       — keep only the newest N finished jobs
+RETENTION_DAYS = float(os.environ.get("ECHO_RETENTION_DAYS", "0") or 0)
+MAX_JOBS = int(os.environ.get("ECHO_MAX_JOBS", "0") or 0)
 
 VALID_MODES = ("text", "interview")
 VALID_ENGINES = ("google", "edge", "openai")
@@ -99,6 +105,7 @@ class JobManager:
     def start(self) -> None:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self._rebuild_from_disk()
+        self._cleanup()
         self._worker = threading.Thread(
             target=self._worker_loop, name="echo-job-worker", daemon=True
         )
@@ -208,6 +215,37 @@ class JobManager:
             return None
         return candidate
 
+    def _cleanup(self) -> None:
+        """Apply optional retention. No-op unless ECHO_RETENTION_DAYS / ECHO_MAX_JOBS set.
+
+        Only finished (done/error) jobs are eligible — never deletes a queued or
+        running job.
+        """
+        if RETENTION_DAYS <= 0 and MAX_JOBS <= 0:
+            return
+
+        with self._lock:
+            jobs = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+        finished = [j for j in jobs if j.status in ("done", "error")]
+
+        doomed: set[str] = set()
+        if RETENTION_DAYS > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+            for j in finished:
+                try:
+                    created = datetime.fromisoformat(j.created_at)
+                except ValueError:
+                    continue
+                if created < cutoff:
+                    doomed.add(j.id)
+        if MAX_JOBS > 0:
+            for j in finished[MAX_JOBS:]:
+                doomed.add(j.id)
+
+        for job_id in doomed:
+            logger.info("Retention cleanup: removing job %s", job_id)
+            self.delete(job_id)
+
     # -- worker ------------------------------------------------------------
 
     def _worker_loop(self) -> None:
@@ -261,6 +299,7 @@ class JobManager:
                 error=str(exc),
                 finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             )
+        self._cleanup()
 
     # -- config building ---------------------------------------------------
 
