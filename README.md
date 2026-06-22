@@ -208,11 +208,17 @@ Environment overrides:
 ## Quick Start
 
 ```bash
+# Interactive mode — pick inputs and common settings from menus
+python main.py -i
+
 # Audio mode — positional arguments
 python main.py lesson01.mp3 lesson01.lrc
 
 # Text-only mode
 python main.py --text phrases.txt
+
+# Mock interview mode — Q:/A: text with different speaker role voices
+python main.py --interview interview.txt
 
 # Text-only mode with OpenAI TTS (for math content)
 python main.py --text math_formulas.txt --engine openai
@@ -233,9 +239,14 @@ python main.py
 ```
 python main.py [audio] [lrc]           # audio mode (positional)
 python main.py --text FILE             # text-only mode
+python main.py --interview FILE        # mock interview mode
 python main.py --scan DIR              # batch mode
+python main.py -i                      # interactive setup menu
 python main.py                         # config-only (paths from config.yaml)
 ```
+
+If `config.yaml` does not contain any input paths and you run `python main.py`
+from an interactive terminal, the same guided menu opens automatically.
 
 ### Input Arguments
 
@@ -244,13 +255,15 @@ python main.py                         # config-only (paths from config.yaml)
 | `audio` | *(positional, optional)* Source audio file (mp3, wav, m4a, etc.) — audio mode |
 | `lrc` | *(positional, optional)* LRC subtitle file with bilingual content — audio mode |
 | `--text, -t FILE` | Bilingual text file — text-only mode |
+| `--interview FILE` | Mock interview text file using `Q:` / `A:` speaker markers |
 | `--scan, -s DIR` | Folder to scan — batch mode |
 
 ### Mode Control
 
 | Flag | Description |
 |---|---|
-| `--mode {audio,text}` | Force mode. Overrides config `mode:` and auto-detection. In batch mode, acts as a **filter**: `audio` = only audio+LRC pairs, `text` = only .txt files, omitted = both |
+| `--mode {audio,text,interview}` | Force mode. Overrides config `mode:` and auto-detection. In batch mode, acts as a **filter**: `audio` = only audio+LRC pairs, `text` = only .txt files, omitted = both |
+| `-i, --interactive` | Start a guided menu for choosing input mode, paths, language preset, TTS engine, loop pattern, and output layout |
 
 ### Output Paths
 
@@ -290,6 +303,8 @@ Variant presets are `full` = `1 T-N-T + 0 T-S-T`, `progressive` = `1 T-N-T + 1 T
 | Flag | Default | Description |
 |---|---|---|
 | `--engine {google,edge,openai}` | `google` | TTS engine selection |
+| `--lang {ja,en}` | — | Target language preset; also switches interview role voices |
+| `--interview-lang {ja,en}` | config | Interview-only role voice language preset |
 | `--target-voice` | `ja-JP-NanamiNeural` | Target language voice (text-only mode, edge-tts) |
 | `--native-voice` | `zh-CN-XiaoxiaoNeural` | Native language voice (edge-tts) |
 | `--voice` | — | Alias for `--native-voice` (backward compatible) |
@@ -298,6 +313,12 @@ Variant presets are `full` = `1 T-N-T + 0 T-S-T`, `progressive` = `1 T-N-T + 1 T
 | `--google-target-voice` | `ja-JP-Chirp3-HD-Charon` | Google target voice — google engine only |
 | `--openai-voice` | `coral` | OpenAI TTS voice — openai engine only |
 | `--openai-instructions` | — | OpenAI TTS instructions prompt — openai engine only |
+| `--interviewer-voice` | `en-US-GuyNeural` | Interview mode edge-tts interviewer voice |
+| `--interviewee-voice` | `en-US-JennyNeural` | Interview mode edge-tts interviewee voice |
+| `--google-interviewer-voice` | `en-US-Chirp3-HD-Charon` | Interview mode Google interviewer voice |
+| `--google-interviewee-voice` | `en-US-Chirp3-HD-Kore` | Interview mode Google interviewee voice |
+| `--openai-interviewer-voice` | `echo` | Interview mode OpenAI interviewer voice |
+| `--openai-interviewee-voice` | `coral` | Interview mode OpenAI interviewee voice |
 
 ### TTS Volume Overrides
 
@@ -353,6 +374,7 @@ paths:
   audio: ""              # source audio file — audio mode
   lrc: ""                # LRC subtitle file — audio mode
   text: ""               # bilingual text file — text-only mode
+  interview: ""          # Q:/A: mock interview file — interview mode
   output: ""             # output audio file (default: <input_name>_echo.<format>)
   output_lrc: ""         # output LRC file (default: same as output with .lrc)
 
@@ -402,6 +424,36 @@ loop:
   variant: "progressive"
   tnt_repeats:          # optional; leave empty to use the variant preset
   tst_repeats:          # optional; leave empty to use the variant preset
+
+interview:
+  lang: "en"
+  interviewer_voice: "en-US-GuyNeural"
+  interviewee_voice: "en-US-JennyNeural"
+  google:
+    interviewer_voice: "en-US-Chirp3-HD-Charon"
+    interviewee_voice: "en-US-Chirp3-HD-Kore"
+  openai:
+    interviewer_voice: "echo"
+    interviewee_voice: "coral"
+  presets:
+    en:
+      interviewer_voice: "en-US-GuyNeural"
+      interviewee_voice: "en-US-JennyNeural"
+      google:
+        interviewer_voice: "en-US-Chirp3-HD-Charon"
+        interviewee_voice: "en-US-Chirp3-HD-Kore"
+      openai:
+        interviewer_voice: "echo"
+        interviewee_voice: "coral"
+    ja:
+      interviewer_voice: "ja-JP-KeitaNeural"
+      interviewee_voice: "ja-JP-NanamiNeural"
+      google:
+        interviewer_voice: "ja-JP-Chirp3-HD-Charon"
+        interviewee_voice: "ja-JP-Chirp3-HD-Kore"
+      openai:
+        interviewer_voice: "echo"
+        interviewee_voice: "coral"
 ```
 
 ---
@@ -426,6 +478,33 @@ Format: `<target_text><delimiter><native_text>`
 > **Why `|||`?** Earlier versions used `-`, but that breaks on content containing hyphens (e.g. `red-black tree`, `2-3 tree`, `state-of-the-art`) — the parser would split at the wrong dash and corrupt both target and native text. `|||` is essentially impossible to find in natural-language content, so the split is always clean.
 
 The default split strategy `last` splits on the **last** occurrence of the delimiter, avoiding issues when the delimiter happens to appear within the text itself.
+
+### Mock Interview File Format
+
+Interview mode uses speaker prefixes before the normal bilingual delimiter.
+Each role-marked line becomes one Echo segment. Longer entries may continue on
+following unmarked lines.
+
+```text
+Q:Tell me about yourself.|||请介绍一下你自己。
+A:Sure. I’m a backend engineer with five years of experience.|||当然。我是一名有五年经验的后端工程师。
+
+Interviewer:Why do you want this role?|||你为什么想要这个岗位？
+Candidate:I’m interested because the role combines product thinking with infrastructure work.|||我感兴趣是因为这个岗位结合了产品思维和基础设施工作。
+```
+
+Supported interviewer markers: `Q:`, `Question:`, `Interviewer:`.
+Supported interviewee markers: `A:`, `Answer:`, `Candidate:`, `Interviewee:`.
+
+Run it with:
+
+```bash
+python main.py --interview interview.txt
+python main.py --interview interview.txt --lang ja
+python main.py --interview interview.txt --interview-lang ja
+```
+
+Interview mode reuses text-mode timing, loop pattern, split outputs, volume, and export settings. The target-language audio uses different role voices for interviewer and interviewee; the Chinese translation audio uses the normal native TTS voice. Use `--lang ja` or `--interview-lang ja` for Japanese interview role voices.
 
 ### LRC File Format
 

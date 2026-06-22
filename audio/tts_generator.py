@@ -240,7 +240,8 @@ def _run_openai_batch(
     """Generate TTS via OpenAI for a batch of texts (sequential to respect rate limits)."""
     client = _get_openai_client()
     model = openai_config.get("model", "gpt-4o-mini-tts")
-    voice = openai_config.get("voice", "coral")
+    voice_key = "native_voice" if prefix == "native" else "target_voice"
+    voice = openai_config.get(voice_key) or openai_config.get("voice", "coral")
     instructions = openai_config.get("instructions", "")
     speed = float(openai_config.get("speed", 1.0))
 
