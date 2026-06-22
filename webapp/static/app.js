@@ -85,7 +85,80 @@ document.querySelectorAll(".tab").forEach((tab) => {
       $("formatHint").innerHTML =
         '格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。';
     }
+    updatePrompt();
   });
+});
+
+// ---------------------------------------------------------------------------
+// AI prompt helper (copy a ready-made prompt to generate a script)
+// ---------------------------------------------------------------------------
+
+function langWord() {
+  const l = $("lang").value;
+  return l === "ja" ? "日语" : l === "en" ? "英语" : "目标语言";
+}
+
+function buildPrompt(mode) {
+  const L = langWord();
+  const topicExample = mode === "interview" ? "后端工程师，5 年经验" : `${L} 日常购物对话`;
+  if (mode === "interview") {
+    return [
+      `你是模拟面试材料生成助手。请围绕我给的岗位/主题，生成一段${L}模拟面试问答。`,
+      ``,
+      `岗位/主题：【在这里填，例如：${topicExample}】`,
+      `问答轮数：8（Q 与 A 交替）`,
+      ``,
+      `严格按以下格式输出，每行一条，不要任何额外说明：`,
+      `Q:<面试官的${L}问题>|||<简体中文翻译>`,
+      `A:<应聘者的${L}回答>|||<简体中文翻译>`,
+      ``,
+      `要求：`,
+      `- 每行以 Q: 或 A: 开头，Q、A 交替`,
+      `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
+      `- 内容专业、自然、长度适中`,
+      `- 除问答行外不要输出任何内容（不要表头、序号、解释）`,
+    ].join("\n");
+  }
+  return [
+    `你是语言学习材料生成助手。请围绕我给的主题，生成${L}学习用的双语句子。`,
+    ``,
+    `主题/场景：【在这里填，例如：${topicExample}】`,
+    `句子数量：15`,
+    ``,
+    `严格按以下格式输出，每行一条，不要任何额外说明、编号或装饰：`,
+    `<${L}句子>|||<对应简体中文>`,
+    ``,
+    `要求：`,
+    `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
+    `- 每行一个完整句子，自然、口语化、难度适中`,
+    `- 除句子行外不要输出任何内容（不要表头、序号、解释）`,
+  ].join("\n");
+}
+
+function updatePrompt() {
+  $("promptText").textContent = buildPrompt(currentMode);
+}
+
+$("lang").addEventListener("change", updatePrompt);
+
+$("copyPromptBtn").addEventListener("click", async () => {
+  const text = buildPrompt(currentMode);
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+  const btn = $("copyPromptBtn");
+  const old = btn.textContent;
+  btn.textContent = "已复制 ✓";
+  setTimeout(() => (btn.textContent = old), 1500);
 });
 
 $("variant").addEventListener("change", (e) => {
@@ -317,4 +390,5 @@ function escapeHtml(s) {
 // Init
 // ---------------------------------------------------------------------------
 
+updatePrompt();
 refreshHistory();

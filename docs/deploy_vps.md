@@ -170,8 +170,10 @@ again.
 ## 6. Usage notes
 
 - **Persistence:** generated jobs live in `./outputs` on the host (a mounted
-  volume), so history survives container restarts. Delete from the UI or
-  `rm -rf outputs/<job-id>`.
+  volume), so history survives container restarts. By default they are kept
+  forever — delete from the UI or `rm -rf outputs/<job-id>`. To auto-clean, set
+  `ECHO_RETENTION_DAYS` (drop jobs older than N days) and/or `ECHO_MAX_JOBS`
+  (keep only the newest N) in `.env`.
 - **Language:** the UI "目标语言 (target language)" picks `ja`/`en`; the native
   side stays Chinese from `config.yaml` — matching the 日→中→日 workflow.
 - **Split output:** the "拆成 _tnt 和 _tst" toggle produces two files per job.

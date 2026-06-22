@@ -150,6 +150,23 @@ input:focus, textarea:focus, select:focus {
 .options[open] { padding-bottom: 12px; }
 .options.nested { margin-top: 4px; background: var(--panel-2); }
 
+/* AI prompt helper */
+.promptbox .prompt-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  line-height: 1.55;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-height: 240px;
+  overflow: auto;
+  color: var(--text);
+  margin: 8px 0;
+  font-family: inherit;
+}
+
 /* Buttons */
 .btn {
   border: none;
