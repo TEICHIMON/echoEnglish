@@ -1,0 +1,12 @@
+# Web UI dependencies (slim — excludes the dead transcription_server deps
+# torch / faster-whisper / sse-starlette that the CLI's requirements.txt still
+# lists). Install with:  pip install -r requirements-web.txt
+pydub>=0.25.1
+edge-tts>=7.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+openai>=1.0.0
+google-cloud-texttospeech>=2.16.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9

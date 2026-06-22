@@ -1,0 +1,19 @@
+.git
+.gitignore
+.github
+.idea
+.claude
+.DS_Store
+__pycache__
+**/__pycache__
+*.pyc
+logs
+outputs
+*.log
+.env
+# Never bake secrets into the image (it is pushed to Docker Hub).
+google-credentials.json
+*-credentials.json
+docs
+*.md
+!README.md
