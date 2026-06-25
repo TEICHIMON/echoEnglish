@@ -77,7 +77,7 @@ tts:
   #   0  = no change (default)
   #  -6  = reduce by 6 dB (noticeably quieter)
   #  +3  = boost by 3 dB
-  gain: -6
+  gain: 0
 
   # normalize: target average loudness (dBFS) for every TTS clip.
   #   Leave empty to disable. When set, each clip is individually
@@ -100,11 +100,11 @@ output:
 # On the VPS these are set via ECHO_SYNC_* env vars (see .env.example), which
 # override the values here. CLI: `--sync-dir DIR` (local copy) / `--no-sync`.
 sync:
-  enabled: false          # set true to sync each run's output to `dest`
-  method: "copy"          # "copy" (local folder) | "rclone" (remote)
+  enabled: true          # set true to sync each run's output to `dest`
+  method: "rclone"        # "copy" (local folder) | "rclone" (remote)
   # For method: copy  -> a local folder, e.g. a Google Drive for Desktop folder.
   # For method: rclone -> an rclone remote path, e.g. "gdrive:echoEnglish".
-  dest: ""
+  dest: "gdrive:echoEnglish"
   layout: "run_folder"    # "run_folder" = YYYY-MM-DD_HH-MM-SS_<Lang> subfolder; "flat" = drop in dest
   include_lrc: true       # also copy the matching .lrc subtitle file
 

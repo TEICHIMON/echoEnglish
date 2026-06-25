@@ -28,11 +28,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from audio.assembler import resolve_loop_pattern
 from echo_logging import setup_logging
-from webapp.jobs import VALID_MODES, manager
+from main import load_config
+from webapp.jobs import CONFIG_PATH, VALID_MODES, manager
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-ECHO_WEB_TOKEN = os.environ.get("ECHO_WEB_TOKEN", "").strip()
+
+
+def _web_token() -> str:
+    return os.environ.get("ECHO_WEB_TOKEN", "").strip()
 
 
 @asynccontextmanager
@@ -58,9 +63,10 @@ def _extract_token(request: Request) -> str | None:
 
 
 async def require_auth(request: Request) -> None:
-    if not ECHO_WEB_TOKEN:
+    token = _web_token()
+    if not token:
         return
-    if _extract_token(request) != ECHO_WEB_TOKEN:
+    if _extract_token(request) != token:
         raise HTTPException(status_code=401, detail="invalid or missing token")
 
 
@@ -150,8 +156,63 @@ async def get_file(job_id: str, name: str, request: Request):
 
 @app.get("/api/config", dependencies=[Depends(require_auth)])
 async def get_config():
-    """Tiny config surface for the UI (auth requirement only, for now)."""
-    return {"auth_required": bool(ECHO_WEB_TOKEN)}
+    """Small, non-secret config surface used to label UI defaults."""
+    return {
+        "auth_required": bool(_web_token()),
+        "defaults": _ui_config_defaults(),
+    }
+
+
+def _ui_config_defaults() -> dict:
+    config = load_config(CONFIG_PATH)
+    loop = config.get("loop", {})
+    pattern = resolve_loop_pattern(
+        loop.get("variant", "full"),
+        loop.get("tnt_repeats"),
+        loop.get("tst_repeats"),
+    )
+    sync = config.get("sync", {})
+    tts = config.get("tts", {})
+    return {
+        "lang": {
+            "text": _text_default_lang(config),
+            "interview": config.get("interview", {}).get("lang") or "",
+        },
+        "engine": tts.get("engine", "google"),
+        "timing": config.get("timing", {}),
+        "loop": {
+            "variant": loop.get("variant", "full"),
+            "tnt_repeats": pattern.tnt_repeats,
+            "tst_repeats": pattern.tst_repeats,
+            "split_outputs": bool(loop.get("split_outputs")),
+        },
+        "tts": {
+            "gain": tts.get("gain", 0),
+            "normalize": tts.get("normalize"),
+        },
+        "output": config.get("output", {}),
+        "sync": {
+            "enabled": bool(sync.get("enabled")),
+            "ready": bool(sync.get("enabled") and sync.get("dest")),
+            "method": sync.get("method", "copy"),
+            "dest": sync.get("dest", ""),
+            "layout": sync.get("layout", "run_folder"),
+            "include_lrc": bool(sync.get("include_lrc", True)),
+        },
+    }
+
+
+def _text_default_lang(config: dict) -> str:
+    tts = config.get("tts", {})
+    engine = tts.get("engine", "google")
+    if engine == "google":
+        voice = tts.get("google", {}).get("target_voice", "")
+    elif engine == "edge":
+        voice = tts.get("target_voice", "")
+    else:
+        voice = ""
+    lang = voice.split("-", 1)[0].lower()
+    return lang if lang in {"ja", "en"} else ""
 
 
 # --------------------------------------------------------------------------
