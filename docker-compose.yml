@@ -25,9 +25,22 @@ services:
       # Optional auto-cleanup of generated audio (0 = keep forever).
       ECHO_RETENTION_DAYS: "${ECHO_RETENTION_DAYS:-0}"
       ECHO_MAX_JOBS: "${ECHO_MAX_JOBS:-0}"
+      # Optional: sync each finished job's audio to Google Drive via rclone.
+      # Enable by setting ECHO_SYNC_ENABLED=true + ECHO_SYNC_DEST in .env, and
+      # mount a working rclone.conf (see volumes below). Disabled by default.
+      ECHO_SYNC_ENABLED: "${ECHO_SYNC_ENABLED:-}"
+      ECHO_SYNC_METHOD: "${ECHO_SYNC_METHOD:-rclone}"
+      ECHO_SYNC_DEST: "${ECHO_SYNC_DEST:-}"
+      ECHO_SYNC_LAYOUT: "${ECHO_SYNC_LAYOUT:-run_folder}"
+      ECHO_SYNC_INCLUDE_LRC: "${ECHO_SYNC_INCLUDE_LRC:-true}"
       BIND_ADDR: 0.0.0.0
       PORT: 8080
     volumes:
       - ./outputs:/data/outputs
       - ./google-credentials.json:/secrets/google-credentials.json:ro
       - ./config.yaml:/app/config.yaml:ro
+      # rclone remote config for Google Drive sync. Mounted read-write so rclone
+      # can refresh and persist the OAuth access token. The file must exist on
+      # the host before `up` (copy it from a machine where `rclone config` set up
+      # the gdrive: remote). Only used when ECHO_SYNC_METHOD=rclone.
+      - ./rclone.conf:/root/.config/rclone/rclone.conf

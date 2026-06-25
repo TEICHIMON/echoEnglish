@@ -14,6 +14,7 @@ outputs
 # Never bake secrets into the image (it is pushed to Docker Hub).
 google-credentials.json
 *-credentials.json
+rclone.conf
 docs
 *.md
 !README.md

@@ -2,9 +2,10 @@
 FROM python:3.12-slim
 
 # ffmpeg is required by pydub for m4a export; ca-certificates for TLS to the
-# Google / OpenAI / edge endpoints.
+# Google / OpenAI / edge endpoints; rclone for the optional Google Drive sync
+# (ECHO_SYNC_METHOD=rclone) of generated audio.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates rclone \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

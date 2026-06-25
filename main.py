@@ -18,6 +18,7 @@ Three modes:
 import argparse
 import copy
 import logging
+import os
 import sys
 import tempfile
 import shutil
@@ -36,6 +37,7 @@ from audio.tts_generator import generate_native_audio, generate_target_audio
 from audio.assembler import assemble_all_loops, EchoTiming, resolve_loop_pattern
 from export.exporter import export_audio
 from export.lrc_writer import generate_echo_lrc
+from export.sync import sync_outputs
 from scanner.scanner import scan_folder, print_scan_summary, ScanItem
 
 from echo_logging import (
@@ -156,6 +158,13 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "tst_repeats": None,
             "split_outputs": False,
         },
+        "sync": {
+            "enabled": False,
+            "method": "copy",         # "copy" (local folder) | "rclone" (remote)
+            "dest": "",
+            "layout": "run_folder",   # "run_folder" | "flat"
+            "include_lrc": True,
+        },
         "interview": {
             "lang": "en",
             "interviewer_voice": "en-US-GuyNeural",
@@ -178,7 +187,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
         if user_config:
             if "mode" in user_config:
                 defaults["mode"] = user_config["mode"] or ""
-            for section in ("paths", "timing", "output", "lrc", "loop"):
+            for section in ("paths", "timing", "output", "lrc", "loop", "sync"):
                 if section in user_config and isinstance(user_config[section], dict):
                     defaults[section].update(user_config[section])
             if "interview" in user_config and isinstance(user_config["interview"], dict):
@@ -244,7 +253,41 @@ def load_config(config_path: str | Path | None = None) -> dict:
     tts["google"]["speaking_rate"] = float(tts["google"].get("speaking_rate", 1.0))
     tts["google"]["pitch"] = float(tts["google"].get("pitch", 0.0))
 
+    sync = defaults["sync"]
+    # Environment overrides (used by the VPS/Docker deployment so the committed
+    # config.yaml can stay disabled/local-oriented). Only applied when present.
+    _apply_sync_env_overrides(sync)
+    sync["enabled"] = bool(sync.get("enabled"))
+    sync["dest"] = str(sync.get("dest") or "")
+    sync["include_lrc"] = bool(sync.get("include_lrc", True))
+    if sync.get("method") not in ("copy", "rclone"):
+        sync["method"] = "copy"
+    if sync.get("layout") not in ("run_folder", "flat"):
+        sync["layout"] = "run_folder"
+
     return defaults
+
+
+def _env_truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _apply_sync_env_overrides(sync: dict) -> None:
+    """Apply ECHO_SYNC_* env vars onto the sync config (empty/unset = ignore)."""
+    enabled = os.environ.get("ECHO_SYNC_ENABLED")
+    if enabled:
+        sync["enabled"] = _env_truthy(enabled)
+    for env_key, cfg_key in (
+        ("ECHO_SYNC_METHOD", "method"),
+        ("ECHO_SYNC_DEST", "dest"),
+        ("ECHO_SYNC_LAYOUT", "layout"),
+    ):
+        value = os.environ.get(env_key)
+        if value:
+            sync[cfg_key] = value
+    include_lrc = os.environ.get("ECHO_SYNC_INCLUDE_LRC")
+    if include_lrc:
+        sync["include_lrc"] = _env_truthy(include_lrc)
 
 
 def parse_args() -> argparse.Namespace:
@@ -319,6 +362,15 @@ Modes:
     output_group.add_argument(
         "--output-lrc", default=None,
         help="Output LRC file path (single-file mode only)",
+    )
+    output_group.add_argument(
+        "--sync-dir", default=None,
+        help="Copy generated audio (+LRC) into this folder after each run "
+             "(e.g. a Google Drive for Desktop synced folder). Enables sync.",
+    )
+    output_group.add_argument(
+        "--no-sync", action="store_true",
+        help="Disable output sync even if enabled in config.yaml.",
     )
 
     parser.add_argument(
@@ -470,6 +522,12 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["paths"]["output"] = args.output
     if args.output_lrc:
         config["paths"]["output_lrc"] = args.output_lrc
+
+    if args.sync_dir:
+        config["sync"]["dest"] = args.sync_dir
+        config["sync"]["enabled"] = True
+    if args.no_sync:
+        config["sync"]["enabled"] = False
 
     if args.after_first_target is not None:
         config["timing"]["after_first_target"] = args.after_first_target
@@ -1401,8 +1459,11 @@ def _assemble_export_one(
     segments, target_audios, native_audios,
     timing, config, output_path, lrc_output_path,
     tnt_repeats: int, tst_repeats: int, label: str,
-) -> None:
-    """Assemble and export a single output with explicit TNT/TST counts."""
+) -> tuple[Path, Path]:
+    """Assemble and export a single output with explicit TNT/TST counts.
+
+    Returns the (audio, lrc) paths written, so the caller can sync them.
+    """
     logger.info(f"  Assembling {label} ({tnt_repeats} T-N-T + {tst_repeats} T-S-T)...")
     result = assemble_all_loops(
         target_audios, native_audios, timing, progress_bar,
@@ -1425,6 +1486,7 @@ def _assemble_export_one(
     )
 
     logger.info(f"✓ {label} saved to: {output_path}")
+    return output_path, lrc_output_path
 
 
 def _assemble_and_export(
@@ -1438,6 +1500,7 @@ def _assemble_and_export(
     template and the _tnt / _tst variants are written alongside the source input.
     """
     pattern = resolve_loop_pattern(**_loop_kwargs(config))
+    written: list[Path] = []
 
     try:
         if _split_enabled(config):
@@ -1451,34 +1514,38 @@ def _assemble_and_export(
                 _split_paths_from_stem(parent, stem, ext)
 
             if pattern.tnt_repeats > 0:
-                _assemble_export_one(
+                written.append(_assemble_export_one(
                     segments, target_audios, native_audios,
                     timing, config, tnt_audio_out, tnt_lrc_out,
                     tnt_repeats=pattern.tnt_repeats, tst_repeats=0,
                     label="T-N-T file",
-                )
+                )[0])
             else:
                 logger.info("  Skipping T-N-T output (tnt_repeats=0)")
 
             if pattern.tst_repeats > 0:
-                _assemble_export_one(
+                written.append(_assemble_export_one(
                     segments, target_audios, native_audios,
                     timing, config, tst_audio_out, tst_lrc_out,
                     tnt_repeats=0, tst_repeats=pattern.tst_repeats,
                     label="T-S-T file",
-                )
+                )[0])
             else:
                 logger.info("  Skipping T-S-T output (tst_repeats=0)")
         else:
-            _assemble_export_one(
+            written.append(_assemble_export_one(
                 segments, target_audios, native_audios,
                 timing, config, output_path, lrc_output_path,
                 tnt_repeats=pattern.tnt_repeats,
                 tst_repeats=pattern.tst_repeats,
                 label="Echo Loop file",
-            )
+            )[0])
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+    # Optionally copy this run's outputs into the configured sync folder
+    # (e.g. a Google Drive for Desktop synced directory). No-op unless enabled.
+    sync_outputs(written, config)
 
 
 def run_audio_mode(config: dict) -> None:

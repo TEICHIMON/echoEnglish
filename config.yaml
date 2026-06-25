@@ -91,6 +91,23 @@ output:
   bitrate: "192k"
   sample_rate: 44100
 
+# Optionally sync each run's generated audio (+LRC) to a destination after it
+# is created. Two methods:
+#   copy   -> plain filesystem copy into a local folder `dest`. Point it at a
+#             Google Drive for Desktop folder on a desktop and Drive uploads it.
+#   rclone -> upload to an rclone remote `dest` (e.g. "gdrive:echoEnglish").
+#             This is how the headless VPS pushes audio to Google Drive.
+# On the VPS these are set via ECHO_SYNC_* env vars (see .env.example), which
+# override the values here. CLI: `--sync-dir DIR` (local copy) / `--no-sync`.
+sync:
+  enabled: false          # set true to sync each run's output to `dest`
+  method: "copy"          # "copy" (local folder) | "rclone" (remote)
+  # For method: copy  -> a local folder, e.g. a Google Drive for Desktop folder.
+  # For method: rclone -> an rclone remote path, e.g. "gdrive:echoEnglish".
+  dest: ""
+  layout: "run_folder"    # "run_folder" = YYYY-MM-DD_HH-MM-SS_<Lang> subfolder; "flat" = drop in dest
+  include_lrc: true       # also copy the matching .lrc subtitle file
+
 lrc:
   # Separator between target text and native text on a single line.
   # Default "|||" is chosen because it is extremely unlikely to appear in
