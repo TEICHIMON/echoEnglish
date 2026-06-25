@@ -150,6 +150,30 @@ input:focus, textarea:focus, select:focus {
 .options[open] { padding-bottom: 12px; }
 .options.nested { margin-top: 4px; background: var(--panel-2); }
 
+.defaults {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.defaults span {
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  word-break: break-word;
+}
+.defaults b {
+  display: block;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
 /* AI prompt helper */
 .promptbox .prompt-text {
   white-space: pre-wrap;
@@ -258,3 +282,8 @@ input:focus, textarea:focus, select:focus {
   font-size: 12.5px; cursor: pointer; padding: 0;
 }
 .link-btn.danger { color: var(--err); }
+
+@media (max-width: 560px) {
+  .grid, .defaults { grid-template-columns: 1fr; }
+  .field-row { flex-direction: column; }
+}

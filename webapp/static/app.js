@@ -8,6 +8,8 @@ const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "echo_token";
 
 let currentMode = "text";
+let appDefaults = null;
+let splitTouched = false;
 const pollers = new Map(); // jobId -> intervalId
 
 function getToken() {
@@ -65,6 +67,99 @@ function clearError() {
   $("error").classList.add("hidden");
 }
 
+function langLabel(value) {
+  return { ja: "日语", en: "英语" }[value] || "配置";
+}
+
+function engineLabel(value) {
+  return { google: "Google", edge: "edge-tts", openai: "OpenAI" }[value] || "配置";
+}
+
+function loopLabel(loop) {
+  if (!loop) return "配置默认";
+  const base = `${loop.tnt_repeats}×T-N-T + ${loop.tst_repeats}×T-S-T`;
+  return loop.split_outputs ? `${base}，拆分输出` : base;
+}
+
+function volumeLabel(tts) {
+  if (!tts) return "配置默认";
+  if (tts.normalize !== null && tts.normalize !== undefined && tts.normalize !== "") {
+    return `normalize ${tts.normalize} dBFS`;
+  }
+  const gain = Number(tts.gain || 0);
+  return `${gain > 0 ? "+" : ""}${gain} dB`;
+}
+
+function timingLabel(timing) {
+  if (!timing) return "配置默认";
+  return `${timing.after_first_target}s / ${timing.after_native}s / ${timing.after_second_target}s`;
+}
+
+function syncLabel(sync) {
+  if (!sync || !sync.enabled) return "关闭";
+  if (!sync.ready) return "已开启，但目标为空";
+  const lrc = sync.include_lrc ? "含 LRC" : "仅音频";
+  return `${sync.method} -> ${sync.dest}，${sync.layout}，${lrc}`;
+}
+
+function setDefaultOption(selectId, text) {
+  const option = $(selectId).querySelector('option[value=""]');
+  if (option) option.textContent = text;
+}
+
+function currentDefaultLang() {
+  if (!appDefaults || !appDefaults.lang) return "";
+  return appDefaults.lang[currentMode] || "";
+}
+
+function updateDefaultLabels() {
+  if (!appDefaults) return;
+
+  const lang = currentDefaultLang();
+  setDefaultOption("lang", lang ? `（配置默认：${langLabel(lang)}）` : "（用配置默认）");
+  setDefaultOption("engine", `（配置默认：${engineLabel(appDefaults.engine)}）`);
+  setDefaultOption("variant", `（配置默认：${loopLabel(appDefaults.loop)}）`);
+
+  $("gain").placeholder = `配置默认：${volumeLabel(appDefaults.tts)}`;
+  $("t1").placeholder = appDefaults.timing.after_first_target;
+  $("t2").placeholder = appDefaults.timing.after_native;
+  $("t3").placeholder = appDefaults.timing.after_second_target;
+
+  $("defaultsSummary").innerHTML = [
+    ["目标语言", lang ? langLabel(lang) : "配置"],
+    ["TTS", engineLabel(appDefaults.engine)],
+    ["循环", loopLabel(appDefaults.loop)],
+    ["停顿", timingLabel(appDefaults.timing)],
+    ["音量", volumeLabel(appDefaults.tts)],
+    ["输出", `${appDefaults.output.format} / ${appDefaults.output.bitrate}`],
+    ["同步", syncLabel(appDefaults.sync)],
+  ]
+    .map(([k, v]) => `<span><b>${escapeHtml(k)}</b>${escapeHtml(v)}</span>`)
+    .join("");
+}
+
+function applyDefaults(defaults) {
+  appDefaults = defaults;
+  if (!appDefaults) return;
+
+  if (appDefaults.loop) {
+    $("split").checked = Boolean(appDefaults.loop.split_outputs);
+    $("tnt").value = appDefaults.loop.tnt_repeats;
+    $("tst").value = appDefaults.loop.tst_repeats;
+  }
+  splitTouched = false;
+  updateDefaultLabels();
+}
+
+async function loadConfigDefaults() {
+  try {
+    const config = await api("/api/config");
+    applyDefaults(config.defaults);
+  } catch (err) {
+    $("defaultsSummary").textContent = "默认配置读取失败：" + err.message;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tabs + options UI
 // ---------------------------------------------------------------------------
@@ -85,6 +180,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
       $("formatHint").innerHTML =
         '格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。';
     }
+    updateDefaultLabels();
     updatePrompt();
   });
 });
@@ -164,6 +260,9 @@ $("copyPromptBtn").addEventListener("click", async () => {
 $("variant").addEventListener("change", (e) => {
   $("customRepeats").classList.toggle("hidden", e.target.value !== "custom");
 });
+$("split").addEventListener("change", () => {
+  splitTouched = true;
+});
 
 // Settings panel
 $("settingsBtn").addEventListener("click", () => {
@@ -196,7 +295,7 @@ function collectRequest() {
   } else if (variant) {
     loop.variant = variant;
   }
-  loop.split = $("split").checked;
+  if (splitTouched) loop.split = $("split").checked;
   req.loop = loop;
 
   const timing = {};
@@ -390,5 +489,10 @@ function escapeHtml(s) {
 // Init
 // ---------------------------------------------------------------------------
 
-updatePrompt();
-refreshHistory();
+async function init() {
+  updatePrompt();
+  await loadConfigDefaults();
+  refreshHistory();
+}
+
+init();

@@ -44,6 +44,8 @@
       <details class="options">
         <summary>选项</summary>
 
+        <div id="defaultsSummary" class="defaults">正在读取当前默认配置…</div>
+
         <div class="grid">
           <label class="field">
             <span>目标语言</span>
@@ -57,6 +59,7 @@
           <label class="field">
             <span>TTS 引擎</span>
             <select id="engine">
+              <option value="">（用配置默认）</option>
               <option value="google">Google（稳定 / 付费）</option>
               <option value="edge">edge-tts（免费）</option>
               <option value="openai">OpenAI（数学符号）</option>
