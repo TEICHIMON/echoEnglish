@@ -5,6 +5,7 @@
 /.env
 /google-credentials.json
 /*-credentials.json
+/rclone.conf
 /logs/
 /outputs/
 /.claude/

@@ -167,7 +167,54 @@ The first workflow run will fail until all secrets are set — that's expected.
 You can re-run it from the **Actions** tab once they're in place, or just push
 again.
 
-## 6. Usage notes
+## 6. Sync generated audio to Google Drive (rclone)
+
+Optionally upload every finished job's audio (+ `.lrc`) to Google Drive. A
+headless VPS can't run Google Drive for Desktop, so it uses **rclone** with a
+Google Drive remote. One-time setup:
+
+1. **On a machine with a browser** (e.g. your laptop), create/authorize a Drive
+   remote named `gdrive` (or refresh it if its token went stale):
+
+   ```bash
+   rclone config              # n) new remote -> name: gdrive -> storage: drive -> browser auth
+   rclone config reconnect gdrive:   # use this if you already have it but the token expired
+   rclone lsd gdrive:         # sanity check: should list your My Drive folders
+   ```
+
+2. **Copy the rclone config to the VPS.** It holds the OAuth token, so it is
+   gitignored and never baked into the image:
+
+   ```bash
+   scp ~/.config/rclone/rclone.conf <user>@<vps>:<DEPLOY_PATH>/rclone.conf
+   ```
+
+   docker-compose mounts it at `/root/.config/rclone/rclone.conf` (read-write so
+   rclone can keep its short-lived access token fresh).
+
+3. **Enable sync in `.env`:**
+
+   ```bash
+   ECHO_SYNC_ENABLED=true
+   ECHO_SYNC_DEST=gdrive:echoEnglish    # a folder in My Drive (created automatically)
+   # ECHO_SYNC_METHOD=rclone            # already the docker-compose default
+   # ECHO_SYNC_LAYOUT=run_folder        # one timestamped subfolder per job
+   ```
+
+4. **Apply:** `docker compose up -d` (env changes take effect on `up`; add
+   `--build` if you also pulled new code).
+
+Each job then uploads to
+`gdrive:echoEnglish/<YYYY-MM-DD_HH-MM-SS_Language>/…`. Sync runs *after* the audio
+is saved and **never fails a job** — issues are logged as warnings only. Watch
+`docker compose logs -f` for `✓ Synced N file(s) to: …` or `Drive sync failed: …`.
+
+> The "Computers › My MacBook Pro › audio" folder you may see in Drive is a
+> *backup of your Mac's local folder*, not a normal Drive folder — uploading
+> there from a server is unreliable and would sync back down onto your Mac. Use a
+> plain My Drive path like `gdrive:echoEnglish` instead.
+
+## 7. Usage notes
 
 - **Persistence:** generated jobs live in `./outputs` on the host (a mounted
   volume), so history survives container restarts. By default they are kept
@@ -180,11 +227,17 @@ again.
 - **Updating:** just `git push` to `main` — CI rebuilds and redeploys. To roll
   out manually on the VPS: `git pull && docker compose pull && docker compose up -d`.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 - **`pipeline produced no audio output` / Google errors:** check
   `docker compose logs -f` — usually the credentials file isn't mounted or the
   service account lacks the TTS role.
+- **Drive sync did nothing:** look for `Drive sync` lines in `docker compose
+  logs`. Common causes: `ECHO_SYNC_ENABLED` isn't `true`; `rclone.conf` is
+  missing/empty on the host (the bind mount then creates an empty file/dir); or
+  the token expired (`invalid_grant`) — refresh with `rclone config reconnect
+  gdrive:` on a browser machine and re-copy `rclone.conf`, then `docker compose
+  up -d`.
 - **edge-tts 503s on long batches:** retry, or split the text; the engine
   retries automatically a few times.
 - **Audio won't seek on iOS:** make sure you reach it over the mounted port
