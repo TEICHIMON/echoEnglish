@@ -121,14 +121,27 @@ def _sync_rclone(files: list[Path], dest: str, subfolder: str) -> int:
 
 
 def _run_folder_name(written_files: list[Path], config: dict) -> str:
-    """Build a ``YYYY-MM-DD_HH-MM-SS_<Label>`` folder name for this run."""
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    """Build the run's sync subfolder name.
+
+    With an explicit ``sync.label`` (a user-chosen theme name from the web UI)
+    the folder is date-only ``YYYY-MM-DD_<label>`` so every file for that theme
+    — including the separate English and Japanese runs — groups together. Without
+    a label (e.g. CLI runs) it keeps the original ``YYYY-MM-DD_HH-MM-SS_<Lang>``.
+    """
     label = _infer_label(written_files, config)
+    if (config.get("sync") or {}).get("label"):
+        date = datetime.now().strftime("%Y-%m-%d")
+        return f"{date}_{label}" if label else date
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     return f"{timestamp}_{label}" if label else timestamp
 
 
 def _infer_label(written_files: list[Path], config: dict) -> str:
-    """Pick a human label: target language, else first output stem, else 'Echo'."""
+    """Pick a human label: explicit sync.label, else target language, else stem."""
+    label = (config.get("sync") or {}).get("label")
+    if label:
+        return str(label).strip()
+
     # Lazy import avoids a circular dependency (main.py imports this module).
     try:
         from main import _infer_target_language
