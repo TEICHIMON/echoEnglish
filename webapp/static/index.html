@@ -31,7 +31,7 @@
 
       <details class="options promptbox" id="promptBox">
         <summary>📋 让 AI 帮你写文字稿（复制提示词）</summary>
-        <p class="hint">复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页和「目标语言」自动调整。</p>
+        <p class="hint">复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」以及「目标语言」自动调整。</p>
         <pre id="promptText" class="prompt-text"></pre>
         <button id="copyPromptBtn" class="btn ghost small" type="button">复制提示词</button>
       </details>
@@ -54,6 +54,14 @@
         placeholder="每行一条：目标语言|||中文翻译&#10;例如：&#10;これはテストです|||这是一个测试&#10;水を飲みます|||我喝水"></textarea>
       <p id="formatHint" class="hint">格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。</p>
 
+      <!-- Trilingual toggle: surfaced here (not buried in 选项) because it
+           changes the input format, the prompt, and the number of outputs.
+           Works for both the 文本 and 面试稿 tabs. -->
+      <label class="field checkbox" id="dualField">
+        <input id="dual" type="checkbox" checked />
+        <span>三语稿 → 同时生成英中 + 日中（粘贴 <code>英文|||日文|||中文</code>，一次出两个音频）</span>
+      </label>
+
       <!-- Options -->
       <details class="options">
         <summary>选项</summary>
@@ -61,11 +69,6 @@
         <div id="defaultsSummary" class="defaults">正在读取当前默认配置…</div>
 
         <div class="grid">
-          <label class="field checkbox" id="dualField">
-            <input id="dual" type="checkbox" checked />
-            <span>生成日+英双语（粘贴 <code>英文|||日文|||中文</code>）</span>
-          </label>
-
           <label class="field">
             <span>目标语言</span>
             <select id="lang">

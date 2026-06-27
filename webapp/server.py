@@ -91,7 +91,7 @@ class JobRequest(BaseModel):
     mode: str = Field(..., description="text | interview")
     content: str
     name: str | None = Field(None, description="required; drives file name + sync folder")
-    dual: bool | None = Field(None, description="text mode: generate EN + JA from a trilingual script")
+    dual: bool | None = Field(None, description="generate EN + JA audio from one trilingual script (text or interview mode)")
     lang: str | None = None
     engine: str | None = None
     loop: LoopOptions | None = None
