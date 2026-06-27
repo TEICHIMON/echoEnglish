@@ -57,6 +57,14 @@ VALID_ENGINES = ("google", "edge", "openai")
 VALID_LANGS = ("ja", "en")
 VALID_VARIANTS = ("full", "progressive", "shadow")
 
+# Optional leading role marker on an interview line (e.g. "Q:", "Answer：").
+# Used when splitting a trilingual interview script so the prefix can be
+# re-attached to BOTH the English and Japanese single-language outputs.
+_ROLE_PREFIX = re.compile(
+    r"^\s*((?:Q|A|Question|Answer|Interviewer|Candidate|Interviewee)\s*[:：]\s*)(.*)$",
+    re.IGNORECASE,
+)
+
 # File suffixes we treat as user-facing job outputs.
 AUDIO_EXTS = (".m4a", ".mp3", ".wav", ".flac", ".ogg", ".aac")
 
@@ -300,10 +308,13 @@ class JobManager:
             input_path = job.dir / f"{slug}.txt"
 
             if job.mode == "interview":
-                config["paths"]["interview"] = str(input_path)
-                run_interview_mode(config)
+                if job.request.get("dual"):
+                    self._run_dual(job, config, input_path, slug, mode="interview")
+                else:
+                    config["paths"]["interview"] = str(input_path)
+                    run_interview_mode(config)
             elif job.request.get("dual"):
-                self._run_dual_text(job, config, input_path, slug)
+                self._run_dual(job, config, input_path, slug, mode="text")
             else:
                 config["paths"]["text"] = str(input_path)
                 run_text_mode(config)
@@ -382,15 +393,28 @@ class JobManager:
 
         return config
 
-    def _run_dual_text(self, job: Job, base_config: dict, input_path: Path, slug: str) -> None:
+    def _run_dual(
+        self, job: Job, base_config: dict, input_path: Path, slug: str, mode: str = "text"
+    ) -> None:
         """Generate both English and Japanese audio from one trilingual script.
 
         Input lines are ``English|||Japanese|||Chinese``. Each is split into two
         2-column files — ``<slug>_en.txt`` (en|||zh) and ``<slug>_ja.txt``
-        (ja|||zh) — and the normal text pipeline runs once per language with that
+        (ja|||zh) — and the pipeline for ``mode`` runs once per language with that
         language's voice preset applied. If no trilingual line is found we fall
         back to a single run on the original content.
+
+        In interview mode the input is ``Q:en|||ja|||zh``; the leading role
+        marker (``Q:`` / ``A:`` …) is preserved on BOTH single-language files so
+        the interview parser still recognises the role on the Japanese side.
         """
+        interview = mode == "interview"
+        runner = run_interview_mode if interview else run_text_mode
+        apply_preset = (
+            _apply_interview_language_preset if interview else _apply_target_language_preset
+        )
+        path_key = "interview" if interview else "text"
+
         raw = input_path.read_text(encoding="utf-8")
         en_lines: list[str] = []
         ja_lines: list[str] = []
@@ -404,6 +428,11 @@ class JobManager:
             parts = [p.strip() for p in stripped.split("|||")]
             if len(parts) >= 3 and parts[0] and parts[1] and parts[2]:
                 en, ja, zh = parts[0], parts[1], parts[2]
+                if interview:
+                    # Keep the Q:/A: role marker on the Japanese line too.
+                    match = _ROLE_PREFIX.match(en)
+                    if match:
+                        ja = f"{match.group(1)}{ja}"
                 en_lines.append(f"{en}|||{zh}")
                 ja_lines.append(f"{ja}|||{zh}")
                 found = True
@@ -413,8 +442,8 @@ class JobManager:
                 ja_lines.append(line)
 
         if not found:
-            base_config["paths"]["text"] = str(input_path)
-            run_text_mode(base_config)
+            base_config["paths"][path_key] = str(input_path)
+            runner(base_config)
             return
 
         en_path = job.dir / f"{slug}_en.txt"
@@ -424,9 +453,9 @@ class JobManager:
 
         for lang, path in (("en", en_path), ("ja", ja_path)):
             cfg = copy.deepcopy(base_config)
-            _apply_target_language_preset(cfg, lang)
-            cfg["paths"]["text"] = str(path)
-            run_text_mode(cfg)
+            apply_preset(cfg, lang)
+            cfg["paths"][path_key] = str(path)
+            runner(cfg)
 
     # -- internal helpers --------------------------------------------------
 

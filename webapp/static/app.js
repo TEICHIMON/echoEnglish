@@ -177,20 +177,24 @@ document.querySelectorAll(".tab").forEach((tab) => {
   });
 });
 
-// Dual EN+JA only applies to text mode; when on, the language is auto (both).
+// Trilingual dual run (EN+JA audio from one en|||ja|||zh script) works in both
+// text and interview modes. When on, the language is auto (both), so the manual
+// target-language picker is locked.
 function isDual() {
-  return currentMode === "text" && $("dual").checked && !$("dual").disabled;
+  return $("dual").checked && !$("dual").disabled;
 }
 
 function updateDualUI() {
-  const interview = currentMode === "interview";
-  $("dualField").classList.toggle("hidden", interview);
-  $("dual").disabled = interview;
   $("lang").disabled = isDual();
 }
 
 function updateContentPlaceholders() {
-  if (currentMode === "interview") {
+  if (currentMode === "interview" && isDual()) {
+    $("content").placeholder =
+      "Q:/A: 三语面试稿，每条用 ||| 分隔 英语|||日语|||中文。例如：\nQ:Tell me about yourself.|||自己紹介をお願いします。|||请介绍一下你自己。\nA:I am a backend engineer.|||バックエンドエンジニアです。|||我是一名后端工程师。";
+    $("formatHint").innerHTML =
+      '格式：<code>Q:/A: 英语|||日语|||中文</code>，会同时生成英中、日中两个面试音频。支持 Q:/Question:/Interviewer: 与 A:/Answer:/Candidate:。';
+  } else if (currentMode === "interview") {
     $("content").placeholder =
       "Q:/A: 面试稿，每条同样用 ||| 分隔中文。例如：\nQ:Tell me about yourself.|||请介绍一下你自己。\nA:Sure, I am a backend engineer.|||当然，我是一名后端工程师。";
     $("formatHint").innerHTML =
@@ -219,8 +223,34 @@ function langWord() {
 
 function buildPrompt(mode) {
   const L = langWord();
+  const langCode = $("lang").value || currentDefaultLang();
+  const lenHint = langCode === "ja" ? "约 8-28 个字符" : "约 6-14 个词";
   const topicExample = mode === "interview" ? "后端工程师，5 年经验" : `${L} 日常购物对话`;
   if (mode === "interview") {
+    if (isDual()) {
+      return [
+        `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的「英语 + 日语 + 中文」三语模拟面试问答。`,
+        ``,
+        `岗位/主题：【在这里填，例如：后端工程师，5 年经验】`,
+        `问答轮数：8（Q 与 A 交替）`,
+        ``,
+        `严格按以下格式输出，每行一条：`,
+        `Q:<面试官的英语问题>|||<对应日语问题>|||<简体中文翻译>`,
+        `A:<应聘者的英语回答>|||<对应日语回答>|||<简体中文翻译>`,
+        ``,
+        `要求：`,
+        `- 每行以 Q: 或 A: 开头，Q、A 交替`,
+        `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文，共三列`,
+        `- 三列必须是同一句意思的对应翻译，英语和日语互为翻译`,
+        `- 每个 Q 控制在 1 句，简短、自然、像真实面试官会问的话`,
+        `- 每个 A 控制在 1-2 句，只讲一个重点，不要写成长段落`,
+        `- 英语、日语都要适合朗读：口语化、节奏清楚，避免复杂从句、括号、斜杠和难读符号`,
+        `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
+        `- 每条内容必须独占一行，不要换行续写`,
+        `- 任意一列内部都不能再出现 |||`,
+        `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
+      ].join("\n");
+    }
     return [
       `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的${L}模拟面试问答。`,
       ``,
@@ -279,7 +309,7 @@ function buildPrompt(mode) {
     `- 每行一个完整短句，必须独占一行，不要换行续写`,
     `- 左右两边都不能包含 |||`,
     `- ${L}部分要自然口语化，适合朗读和影子跟读`,
-    `- 每句尽量短：英语约 6-14 个词；日语约 8-28 个字符`,
+    `- 每句尽量短：${L}${lenHint}`,
     `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
     `- 中文翻译要简洁自然，贴近原意，不要扩写`,
     `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
