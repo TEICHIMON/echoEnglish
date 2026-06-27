@@ -90,6 +90,8 @@ class TimingOptions(BaseModel):
 class JobRequest(BaseModel):
     mode: str = Field(..., description="text | interview")
     content: str
+    name: str | None = Field(None, description="required; drives file name + sync folder")
+    dual: bool | None = Field(None, description="text mode: generate EN + JA from a trilingual script")
     lang: str | None = None
     engine: str | None = None
     loop: LoopOptions | None = None
@@ -106,6 +108,8 @@ class JobRequest(BaseModel):
 async def create_job(req: JobRequest):
     if req.mode not in VALID_MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of {VALID_MODES}")
+    if not (req.name or "").strip():
+        raise HTTPException(status_code=400, detail="name is required")
     request_payload = req.model_dump(exclude={"content", "mode"})
     try:
         job = manager.create(req.mode, req.content, request_payload)

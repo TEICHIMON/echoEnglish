@@ -2,12 +2,13 @@
 
 Wraps the existing CLI pipeline. Each submitted job:
 
-  1. Writes the pasted text to ``OUTPUT_DIR/<job_id>/input.txt`` (text mode) or
-     ``interview.txt`` (interview mode).
+  1. Writes the pasted text to ``OUTPUT_DIR/<job_id>/<slug>.txt`` (the user's
+     name, sanitised), so the output stem is meaningful and unique per run.
   2. Builds a ``config`` dict from ``config.yaml`` plus the request overrides.
   3. Calls ``run_text_mode`` / ``run_interview_mode`` from ``main.py`` — the same
-     code path the CLI uses, so output lands in the job folder with an ``_echo``
-     (or ``_tnt`` / ``_tst``) suffix.
+     code path the CLI uses, so output lands in the job folder with a ``_tst``
+     (or ``_tnt``/``_echo``) suffix. A dual (EN+JA) text job runs the pipeline
+     twice from a trilingual script, emitting ``<slug>_en_*`` and ``<slug>_ja_*``.
 
 A single background worker thread drains a FIFO queue. Running jobs serially is
 deliberate: the pipeline relies on global folder-log handlers
@@ -17,10 +18,12 @@ hammering the TTS backends.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import traceback
@@ -56,6 +59,25 @@ VALID_VARIANTS = ("full", "progressive", "shadow")
 
 # File suffixes we treat as user-facing job outputs.
 AUDIO_EXTS = (".m4a", ".mp3", ".wav", ".flac", ".ogg", ".aac")
+
+# Characters unsafe in file names / rclone remote paths.
+_SLUG_STRIP = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+def _slugify(name: str) -> str:
+    """Turn a user-provided name into a safe file/folder stem.
+
+    Keeps CJK and most printable characters, drops path separators and control
+    chars, collapses whitespace, trims trailing dots/spaces, and caps the
+    length. Raises ``ValueError`` if nothing usable remains so the API returns a
+    400 instead of silently producing ``output_*`` files.
+    """
+    cleaned = _SLUG_STRIP.sub("", name or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned[:60].strip(" .")
+    if not cleaned:
+        raise ValueError("name is empty after sanitising")
+    return cleaned
 
 
 @dataclass
@@ -153,18 +175,25 @@ class JobManager:
         if not content:
             raise ValueError("content is empty")
 
+        name = (request.get("name") or "").strip()
+        if not name:
+            raise ValueError("name is required")
+        slug = _slugify(name)          # may raise ValueError -> 400
+        request["slug"] = slug
+
         job_id = uuid.uuid4().hex[:12]
         job = Job(
             id=job_id,
             mode=mode,
-            title=_derive_title(content),
+            title=name,
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             request=request,
         )
         job.dir.mkdir(parents=True, exist_ok=True)
 
-        input_name = "interview.txt" if mode == "interview" else "input.txt"
-        (job.dir / input_name).write_text(content, encoding="utf-8")
+        # The input filename becomes the output stem (slug_echo / slug_tst …),
+        # which is what makes each run's synced files uniquely named.
+        (job.dir / f"{slug}.txt").write_text(content, encoding="utf-8")
 
         with self._lock:
             self._jobs[job_id] = job
@@ -267,12 +296,14 @@ class JobManager:
         start = time.monotonic()
         try:
             config = self._build_config(job)
-            input_name = "interview.txt" if job.mode == "interview" else "input.txt"
-            input_path = job.dir / input_name
+            slug = job.request.get("slug") or "output"
+            input_path = job.dir / f"{slug}.txt"
 
             if job.mode == "interview":
                 config["paths"]["interview"] = str(input_path)
                 run_interview_mode(config)
+            elif job.request.get("dual"):
+                self._run_dual_text(job, config, input_path, slug)
             else:
                 config["paths"]["text"] = str(input_path)
                 run_text_mode(config)
@@ -342,7 +373,60 @@ class JobManager:
             config["tts"]["gain"] = float(req["gain"])
             config["tts"]["normalize"] = None
 
+        # The chosen name doubles as the sync folder label, so a run's files
+        # (incl. the EN + JA outputs of a dual run) land in YYYY-MM-DD_<name>.
+        slug = req.get("slug")
+        if slug:
+            config.setdefault("sync", {})
+            config["sync"]["label"] = slug
+
         return config
+
+    def _run_dual_text(self, job: Job, base_config: dict, input_path: Path, slug: str) -> None:
+        """Generate both English and Japanese audio from one trilingual script.
+
+        Input lines are ``English|||Japanese|||Chinese``. Each is split into two
+        2-column files — ``<slug>_en.txt`` (en|||zh) and ``<slug>_ja.txt``
+        (ja|||zh) — and the normal text pipeline runs once per language with that
+        language's voice preset applied. If no trilingual line is found we fall
+        back to a single run on the original content.
+        """
+        raw = input_path.read_text(encoding="utf-8")
+        en_lines: list[str] = []
+        ja_lines: list[str] = []
+        found = False
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                en_lines.append(line)
+                ja_lines.append(line)
+                continue
+            parts = [p.strip() for p in stripped.split("|||")]
+            if len(parts) >= 3 and parts[0] and parts[1] and parts[2]:
+                en, ja, zh = parts[0], parts[1], parts[2]
+                en_lines.append(f"{en}|||{zh}")
+                ja_lines.append(f"{ja}|||{zh}")
+                found = True
+            else:
+                # Not trilingual — pass the line through unchanged to both runs.
+                en_lines.append(line)
+                ja_lines.append(line)
+
+        if not found:
+            base_config["paths"]["text"] = str(input_path)
+            run_text_mode(base_config)
+            return
+
+        en_path = job.dir / f"{slug}_en.txt"
+        ja_path = job.dir / f"{slug}_ja.txt"
+        en_path.write_text("\n".join(en_lines) + "\n", encoding="utf-8")
+        ja_path.write_text("\n".join(ja_lines) + "\n", encoding="utf-8")
+
+        for lang, path in (("en", en_path), ("ja", ja_path)):
+            cfg = copy.deepcopy(base_config)
+            _apply_target_language_preset(cfg, lang)
+            cfg["paths"]["text"] = str(path)
+            run_text_mode(cfg)
 
     # -- internal helpers --------------------------------------------------
 
@@ -364,32 +448,12 @@ class JobManager:
             logger.warning("Could not persist job %s", job.id, exc_info=True)
 
 
-def _derive_title(content: str) -> str:
-    """First meaningful line, target side only, truncated."""
-    for raw in content.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        # Drop interview role prefix (Q:/A:/Interviewer: ...)
-        if ":" in line[:14] or "：" in line[:14]:
-            line = line.split(":", 1)[-1].split("：", 1)[-1].strip()
-        # Keep the target side only.
-        for delim in ("|||", "\t"):
-            if delim in line:
-                line = line.split(delim, 1)[0].strip()
-                break
-        return line[:48] if line else "(untitled)"
-    return "(untitled)"
-
-
 def _discover_outputs(job_dir: Path, config: dict) -> list[str]:
     """List generated audio + matching LRC files, audio first."""
     audio: list[str] = []
     lrc: list[str] = []
     for child in sorted(job_dir.iterdir()):
         if not child.is_file():
-            continue
-        if child.name in ("input.txt", "interview.txt", "job.json", "error.log"):
             continue
         suffix = child.suffix.lower()
         if suffix in AUDIO_EXTS:

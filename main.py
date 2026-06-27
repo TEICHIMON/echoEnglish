@@ -1271,20 +1271,21 @@ def resolve_output_paths(config: dict, mode: str) -> tuple[Path, Path]:
     """Determine output audio and LRC file paths."""
     paths = config["paths"]
     ext = config["output"]["format"]
+    suffix = _single_output_suffix(config)
 
     if paths.get("output"):
         audio_out = Path(paths["output"])
     elif mode == "interview" and paths.get("interview"):
         stem = Path(paths["interview"]).stem
-        audio_out = Path(paths["interview"]).parent / f"{stem}_echo.{ext}"
+        audio_out = Path(paths["interview"]).parent / f"{stem}{suffix}.{ext}"
     elif mode == "text" and paths.get("text"):
         stem = Path(paths["text"]).stem
-        audio_out = Path(paths["text"]).parent / f"{stem}_echo.{ext}"
+        audio_out = Path(paths["text"]).parent / f"{stem}{suffix}.{ext}"
     elif mode == "audio" and paths.get("audio"):
         stem = Path(paths["audio"]).stem
-        audio_out = Path(paths["audio"]).parent / f"{stem}_echo.{ext}"
+        audio_out = Path(paths["audio"]).parent / f"{stem}{suffix}.{ext}"
     else:
-        audio_out = Path(f"output_echo.{ext}")
+        audio_out = Path(f"output{suffix}.{ext}")
 
     if paths.get("output_lrc"):
         lrc_out = Path(paths["output_lrc"])
@@ -1376,6 +1377,24 @@ def _loop_label(config: dict) -> str:
 
 def _split_enabled(config: dict) -> bool:
     return bool(config.get("loop", {}).get("split_outputs"))
+
+
+def _single_output_suffix(config: dict) -> str:
+    """Suffix for a single (non-split) output file, based on the loop pattern.
+
+    A T-S-T-only run (the default "shadow" variant) is named ``_tst`` and a
+    T-N-T-only run ``_tnt``; a mixed run keeps the neutral ``_echo``. When split
+    output is enabled the caller derives ``_tnt`` / ``_tst`` itself (and strips a
+    trailing ``_echo``), so we keep ``_echo`` here to feed that path cleanly.
+    """
+    if _split_enabled(config):
+        return "_echo"
+    pattern = resolve_loop_pattern(**_loop_kwargs(config))
+    if pattern.tst_repeats > 0 and pattern.tnt_repeats == 0:
+        return "_tst"
+    if pattern.tnt_repeats > 0 and pattern.tst_repeats == 0:
+        return "_tnt"
+    return "_echo"
 
 
 def _split_paths_from_stem(parent: Path, stem: str, ext: str) -> tuple[Path, Path, Path, Path]:

@@ -36,6 +36,20 @@
         <button id="copyPromptBtn" class="btn ghost small" type="button">复制提示词</button>
       </details>
 
+      <!-- exam-prompt.md is a snapshot of interview-notes/visual-web/_exam-prompt.md
+           (the ```text block). Re-copy that file's content here when /exam updates it. -->
+      <details class="options promptbox" id="examPromptBox">
+        <summary>📝 自测卷提示词（复制到手机，生成 HTML 试卷）</summary>
+        <p class="hint">复制下面整段指令，连同截图发给手机上的 Claude / ChatGPT，会生成一张三语对照、带图、可折叠的自测卷 HTML（不是音频）。</p>
+        <pre id="examPromptText" class="prompt-text">加载中…</pre>
+        <button id="copyExamPromptBtn" class="btn ghost small" type="button">复制提示词</button>
+      </details>
+
+      <label class="field">
+        <span>名称（必填，用于文件名和同步文件夹）</span>
+        <input id="name" type="text" maxlength="60" placeholder="例如：购物对话" autocomplete="off" />
+      </label>
+
       <textarea id="content" rows="9" spellcheck="false"
         placeholder="每行一条：目标语言|||中文翻译&#10;例如：&#10;これはテストです|||这是一个测试&#10;水を飲みます|||我喝水"></textarea>
       <p id="formatHint" class="hint">格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。</p>
@@ -47,6 +61,11 @@
         <div id="defaultsSummary" class="defaults">正在读取当前默认配置…</div>
 
         <div class="grid">
+          <label class="field checkbox" id="dualField">
+            <input id="dual" type="checkbox" checked />
+            <span>生成日+英双语（粘贴 <code>英文|||日文|||中文</code>）</span>
+          </label>
+
           <label class="field">
             <span>目标语言</span>
             <select id="lang">
@@ -90,7 +109,7 @@
 
           <label class="field checkbox">
             <input id="split" type="checkbox" />
-            <span>拆成 _tnt 和 _tst 两个文件</span>
+            <span>双音频模式（拆成 _tnt + _tst 两个文件）</span>
           </label>
 
           <label class="field">

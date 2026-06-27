@@ -170,21 +170,43 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     currentMode = tab.dataset.mode;
-    if (currentMode === "interview") {
-      $("content").placeholder =
-        "Q:/A: 面试稿，每条同样用 ||| 分隔中文。例如：\nQ:Tell me about yourself.|||请介绍一下你自己。\nA:Sure, I am a backend engineer.|||当然，我是一名后端工程师。";
-      $("formatHint").innerHTML =
-        '格式：<code>Q:/A: 目标语言|||中文</code>。支持 Q:/Question:/Interviewer: 与 A:/Answer:/Candidate:。';
-    } else {
-      $("content").placeholder =
-        "每行一条：目标语言|||中文翻译\n例如：\nこれはテストです|||这是一个测试\n水を飲みます|||我喝水";
-      $("formatHint").innerHTML =
-        '格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。';
-    }
+    updateDualUI();
+    updateContentPlaceholders();
     updateDefaultLabels();
     updatePrompt();
   });
 });
+
+// Dual EN+JA only applies to text mode; when on, the language is auto (both).
+function isDual() {
+  return currentMode === "text" && $("dual").checked && !$("dual").disabled;
+}
+
+function updateDualUI() {
+  const interview = currentMode === "interview";
+  $("dualField").classList.toggle("hidden", interview);
+  $("dual").disabled = interview;
+  $("lang").disabled = isDual();
+}
+
+function updateContentPlaceholders() {
+  if (currentMode === "interview") {
+    $("content").placeholder =
+      "Q:/A: 面试稿，每条同样用 ||| 分隔中文。例如：\nQ:Tell me about yourself.|||请介绍一下你自己。\nA:Sure, I am a backend engineer.|||当然，我是一名后端工程师。";
+    $("formatHint").innerHTML =
+      '格式：<code>Q:/A: 目标语言|||中文</code>。支持 Q:/Question:/Interviewer: 与 A:/Answer:/Candidate:。';
+  } else if (isDual()) {
+    $("content").placeholder =
+      "每行一条：英语|||日语|||中文\n例如：\nI'd like to pay by card.|||カードで払いたいです。|||我想用卡支付。\nWhere is the fitting room?|||試着室はどこですか。|||试衣间在哪里？";
+    $("formatHint").innerHTML =
+      '格式：<code>英语|||日语|||中文</code>，每行一条，<code>#</code> 开头为注释。会同时生成英文和日文两个音频。';
+  } else {
+    $("content").placeholder =
+      "每行一条：目标语言|||中文翻译\n例如：\nこれはテストです|||这是一个测试\n水を飲みます|||我喝水";
+    $("formatHint").innerHTML =
+      '格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // AI prompt helper (copy a ready-made prompt to generate a script)
@@ -221,6 +243,28 @@ function buildPrompt(mode) {
       `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
     ].join("\n");
   }
+  if (isDual()) {
+    return [
+      `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的主题，生成适合 TTS 朗读、复听和跟读的「英语 + 日语 + 中文」三语短句。`,
+      ``,
+      `主题/场景：【在这里填，例如：日常购物对话】`,
+      `句子数量：15`,
+      ``,
+      `严格按以下格式输出，每行一条：`,
+      `<英语句子>|||<日语句子>|||<简体中文>`,
+      ``,
+      `要求：`,
+      `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文，共三列`,
+      `- 每行一个完整短句，必须独占一行，不要换行续写`,
+      `- 三列必须是同一句意思的对应翻译，互为翻译、长度大致相当`,
+      `- 英语、日语都要自然口语化，适合朗读和影子跟读`,
+      `- 每句尽量短：英语约 6-14 个词；日语约 8-28 个字符`,
+      `- 任意一列内部都不能再出现 |||`,
+      `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
+      `- 中文翻译要简洁自然，贴近原意，不要扩写`,
+      `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
+    ].join("\n");
+  }
   return [
     `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的主题，生成适合 TTS 朗读、复听和跟读的${L}双语短句。`,
     ``,
@@ -247,9 +291,13 @@ function updatePrompt() {
 }
 
 $("lang").addEventListener("change", updatePrompt);
+$("dual").addEventListener("change", () => {
+  updateDualUI();
+  updateContentPlaceholders();
+  updatePrompt();
+});
 
-$("copyPromptBtn").addEventListener("click", async () => {
-  const text = buildPrompt(currentMode);
+async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch (_) {
@@ -262,10 +310,36 @@ $("copyPromptBtn").addEventListener("click", async () => {
     try { document.execCommand("copy"); } catch (e) {}
     document.body.removeChild(ta);
   }
-  const btn = $("copyPromptBtn");
+}
+
+function flashCopied(btn) {
   const old = btn.textContent;
   btn.textContent = "已复制 ✓";
   setTimeout(() => (btn.textContent = old), 1500);
+}
+
+$("copyPromptBtn").addEventListener("click", async () => {
+  await copyToClipboard(buildPrompt(currentMode));
+  flashCopied($("copyPromptBtn"));
+});
+
+// Exam prompt: a static snapshot of interview-notes' portable phone prompt.
+let examPromptText = "";
+async function loadExamPrompt() {
+  try {
+    const res = await fetch("/static/exam-prompt.md");
+    if (!res.ok) throw new Error(res.statusText);
+    examPromptText = (await res.text()).trim();
+  } catch (_) {
+    examPromptText = "";
+  }
+  $("examPromptText").textContent = examPromptText || "提示词加载失败，请刷新页面。";
+}
+
+$("copyExamPromptBtn").addEventListener("click", async () => {
+  if (!examPromptText) return;
+  await copyToClipboard(examPromptText);
+  flashCopied($("copyExamPromptBtn"));
 });
 
 $("variant").addEventListener("change", (e) => {
@@ -293,9 +367,11 @@ $("refreshBtn").addEventListener("click", refreshHistory);
 // ---------------------------------------------------------------------------
 
 function collectRequest() {
-  const req = { mode: currentMode, content: $("content").value };
+  const req = { mode: currentMode, content: $("content").value, name: $("name").value.trim() };
 
-  if ($("lang").value) req.lang = $("lang").value;
+  const dual = isDual();
+  if (dual) req.dual = true;
+  if (!dual && $("lang").value) req.lang = $("lang").value;
   if ($("engine").value) req.engine = $("engine").value;
 
   const loop = {};
@@ -323,6 +399,10 @@ function collectRequest() {
 $("generateBtn").addEventListener("click", async () => {
   clearError();
   const req = collectRequest();
+  if (!req.name) {
+    showError("请先填写名称（用于文件名和同步文件夹）。");
+    return;
+  }
   if (!req.content.trim()) {
     showError("请输入要生成的内容。");
     return;
@@ -501,7 +581,10 @@ function escapeHtml(s) {
 // ---------------------------------------------------------------------------
 
 async function init() {
+  updateDualUI();
+  updateContentPlaceholders();
   updatePrompt();
+  loadExamPrompt();
   await loadConfigDefaults();
   refreshHistory();
 }
