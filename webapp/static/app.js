@@ -173,6 +173,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
     updateDualUI();
     updateContentPlaceholders();
     updateDefaultLabels();
+    syncPromptCountUI();
     updatePrompt();
   });
 });
@@ -221,30 +222,59 @@ function langWord() {
   return l === "ja" ? "日语" : l === "en" ? "英语" : "目标语言";
 }
 
+// Count shown in the copy-prompt helper. Remembered per mode: interview mode
+// asks for Q&A rounds (default 24 — long enough for a real deep-dive interview),
+// text mode asks for sentence count. Switching tabs restores that mode's value.
+const promptCounts = { interview: 24, text: 15 };
+
+function promptCount(mode) {
+  const n = parseInt(promptCounts[mode], 10);
+  if (Number.isFinite(n) && n > 0) return n;
+  return mode === "interview" ? 24 : 15;
+}
+
+function syncPromptCountUI() {
+  const input = $("promptCount");
+  const label = $("promptCountLabel");
+  if (currentMode === "interview") {
+    label.textContent = "问答轮数（Q 与 A 交替，建议 ≥ 20，含深挖追问）";
+  } else {
+    label.textContent = "句子数量";
+  }
+  input.value = promptCounts[currentMode];
+}
+
 function buildPrompt(mode) {
   const L = langWord();
   const langCode = $("lang").value || currentDefaultLang();
   const lenHint = langCode === "ja" ? "约 8-28 个字符" : "约 6-14 个词";
   const topicExample = mode === "interview" ? "后端工程师，5 年经验" : `${L} 日常购物对话`;
   if (mode === "interview") {
+    const rounds = promptCount("interview");
     if (isDual()) {
       return [
-        `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的「英语 + 日语 + 中文」三语模拟面试问答。`,
+        `你是 Echo Loop 跟读训练材料生成助手，同时也是一位资深技术面试官。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的「英语 + 日语 + 中文」三语模拟面试问答。`,
         ``,
         `岗位/主题：【在这里填，例如：后端工程师，5 年经验】`,
-        `问答轮数：8（Q 与 A 交替）`,
+        `问答轮数：${rounds}（Q 与 A 交替，至少 ${rounds} 轮，宁多勿少）`,
         ``,
         `严格按以下格式输出，每行一条：`,
         `Q:<面试官的英语问题>|||<对应日语问题>|||<简体中文翻译>`,
         `A:<应聘者的英语回答>|||<对应日语回答>|||<简体中文翻译>`,
         ``,
-        `要求：`,
+        `面试深度与覆盖（核心要求）：`,
+        `- 对标资深 / 高级工程师面试：考机制原理、设计选型、trade-off、复杂度、并发与一致性、容错、可观测性、真实生产经验，不要停留在「是什么」的层面`,
+        `- 循序渐进、分阶段推进：自我介绍 / 项目背景 → 基础概念 → 设计与机制 → 取舍与选型 → 边界与失败场景 → 性能与扩展 → deep dive 深挖`,
+        `- 后段必须包含「深挖」：针对前面的某个回答继续追问，例如「为什么这样选」「如果量级再大十倍会怎样」「线上踩过什么坑」「还有没有更好的方案」`,
+        `- 问得深也要问得广：从基础到系统设计再到工程实践都要覆盖，避免反复在同一个点上打转`,
+        ``,
+        `格式与朗读要求：`,
         `- 每行以 Q: 或 A: 开头，Q、A 交替`,
         `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文，共三列`,
         `- 三列必须是同一句意思的对应翻译，英语和日语互为翻译`,
-        `- 每个 Q 控制在 1 句，简短、自然、像真实面试官会问的话`,
-        `- 每个 A 控制在 1-2 句，只讲一个重点，不要写成长段落`,
-        `- 英语、日语都要适合朗读：口语化、节奏清楚，避免复杂从句、括号、斜杠和难读符号`,
+        `- 每个 Q 控制在 1 句口语：即使是深挖追问，也用一句自然的话问出来，避免复杂从句、括号、斜杠和难读符号`,
+        `- 每个 A 控制在 1-2 句，答到点子上、点出关键取舍即可，不要写成长段落`,
+        `- 英语、日语都要适合朗读：口语化、节奏清楚`,
         `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
         `- 每条内容必须独占一行，不要换行续写`,
         `- 任意一列内部都不能再出现 |||`,
@@ -252,21 +282,27 @@ function buildPrompt(mode) {
       ].join("\n");
     }
     return [
-      `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的${L}模拟面试问答。`,
+      `你是 Echo Loop 跟读训练材料生成助手，同时也是一位资深技术面试官。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的${L}模拟面试问答。`,
       ``,
       `岗位/主题：【在这里填，例如：${topicExample}】`,
-      `问答轮数：8（Q 与 A 交替）`,
+      `问答轮数：${rounds}（Q 与 A 交替，至少 ${rounds} 轮，宁多勿少）`,
       ``,
       `严格按以下格式输出，每行一条：`,
       `Q:<面试官的${L}问题>|||<简体中文翻译>`,
       `A:<应聘者的${L}回答>|||<简体中文翻译>`,
       ``,
-      `要求：`,
+      `面试深度与覆盖（核心要求）：`,
+      `- 对标资深 / 高级工程师面试：考机制原理、设计选型、trade-off、复杂度、并发与一致性、容错、可观测性、真实生产经验，不要停留在「是什么」的层面`,
+      `- 循序渐进、分阶段推进：自我介绍 / 项目背景 → 基础概念 → 设计与机制 → 取舍与选型 → 边界与失败场景 → 性能与扩展 → deep dive 深挖`,
+      `- 后段必须包含「深挖」：针对前面的某个回答继续追问，例如「为什么这样选」「如果量级再大十倍会怎样」「线上踩过什么坑」「还有没有更好的方案」`,
+      `- 问得深也要问得广：从基础到系统设计再到工程实践都要覆盖，避免反复在同一个点上打转`,
+      ``,
+      `格式与朗读要求：`,
       `- 每行以 Q: 或 A: 开头，Q、A 交替`,
       `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
-      `- 每个 Q 控制在 1 句，简短、自然、像真实面试官会问的话`,
-      `- 每个 A 控制在 1-2 句，只讲一个重点，不要写成长段落`,
-      `- ${L}部分要适合朗读：口语化、节奏清楚，避免复杂从句、括号、斜杠和难读符号`,
+      `- 每个 Q 控制在 1 句口语：即使是深挖追问，也用一句自然的话问出来，避免复杂从句、括号、斜杠和难读符号`,
+      `- 每个 A 控制在 1-2 句，答到点子上、点出关键取舍即可，不要写成长段落`,
+      `- ${L}部分要适合朗读：口语化、节奏清楚`,
       `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
       `- 每条内容必须独占一行，不要换行续写`,
       `- 左右两边都不能包含 |||`,
@@ -278,7 +314,7 @@ function buildPrompt(mode) {
       `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的主题，生成适合 TTS 朗读、复听和跟读的「英语 + 日语 + 中文」三语短句。`,
       ``,
       `主题/场景：【在这里填，例如：日常购物对话】`,
-      `句子数量：15`,
+      `句子数量：${promptCount("text")}`,
       ``,
       `严格按以下格式输出，每行一条：`,
       `<英语句子>|||<日语句子>|||<简体中文>`,
@@ -299,7 +335,7 @@ function buildPrompt(mode) {
     `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的主题，生成适合 TTS 朗读、复听和跟读的${L}双语短句。`,
     ``,
     `主题/场景：【在这里填，例如：${topicExample}】`,
-    `句子数量：15`,
+    `句子数量：${promptCount("text")}`,
     ``,
     `严格按以下格式输出，每行一条：`,
     `<${L}句子>|||<对应简体中文>`,
@@ -321,6 +357,10 @@ function updatePrompt() {
 }
 
 $("lang").addEventListener("change", updatePrompt);
+$("promptCount").addEventListener("input", () => {
+  promptCounts[currentMode] = $("promptCount").value;
+  updatePrompt();
+});
 $("dual").addEventListener("change", () => {
   updateDualUI();
   updateContentPlaceholders();
@@ -613,6 +653,7 @@ function escapeHtml(s) {
 async function init() {
   updateDualUI();
   updateContentPlaceholders();
+  syncPromptCountUI();
   updatePrompt();
   loadExamPrompt();
   await loadConfigDefaults();
