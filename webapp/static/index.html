@@ -33,7 +33,7 @@
         <summary>📋 让 AI 帮你写文字稿（复制提示词）</summary>
         <p class="hint">复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」、「目标语言」以及下面的数量自动调整。</p>
         <label class="field prompt-count">
-          <span id="promptCountLabel">问答轮数（Q 与 A 交替，建议 ≥ 20，含深挖追问）</span>
+          <span id="promptCountLabel">问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）</span>
           <input id="promptCount" type="number" min="1" max="60" value="24" inputmode="numeric" />
         </label>
         <pre id="promptText" class="prompt-text"></pre>
