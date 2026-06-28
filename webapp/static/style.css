@@ -175,6 +175,8 @@ input:focus, textarea:focus, select:focus {
 }
 
 /* AI prompt helper */
+.promptbox .prompt-count { margin: 8px 0 0; }
+.promptbox .prompt-count input { max-width: 120px; }
 .promptbox .prompt-text {
   white-space: pre-wrap;
   word-break: break-word;
