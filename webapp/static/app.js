@@ -249,6 +249,8 @@ function buildPrompt(mode) {
   const langCode = $("lang").value || currentDefaultLang();
   const lenHint = langCode === "ja" ? "约 8-28 个字符" : "约 6-14 个词";
   const topicExample = mode === "interview" ? "后端工程师，5 年经验" : `${L} 日常购物对话`;
+  const jaFuriganaRule = `- 日语汉字和数字都要注音：在汉字 / 数字后用全角括号标注平假名读音，如 漢字（かんじ）、2024年（にせんにじゅうよねん）；纯假名和片假名外来语（カタカナ）不用注`;
+  const jaFuriganaSingle = langCode === "ja" ? jaFuriganaRule : null;
   if (mode === "interview") {
     const rounds = promptCount("interview");
     if (isDual()) {
@@ -281,11 +283,12 @@ function buildPrompt(mode) {
         `- 每个 Q 控制在 1 句口语：即使是深挖追问，也用一句自然的话问出来，避免复杂从句、括号、斜杠和难读符号`,
         `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
         `- 英语、日语都要适合朗读：口语化、节奏清楚`,
+        jaFuriganaRule,
         `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
         `- 每条内容必须独占一行，不要换行续写`,
         `- 任意一列内部都不能再出现 |||`,
         `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
-      ].join("\n");
+      ].filter(Boolean).join("\n");
     }
     return [
       `你是 Echo Loop 跟读训练材料生成助手，同时也是一位资深技术面试官。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的${L}模拟面试问答。`,
@@ -315,11 +318,12 @@ function buildPrompt(mode) {
       `- 每个 Q 控制在 1 句口语：即使是深挖追问，也用一句自然的话问出来，避免复杂从句、括号、斜杠和难读符号`,
       `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
       `- ${L}部分要适合朗读：口语化、节奏清楚`,
+      jaFuriganaSingle,
       `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
       `- 每条内容必须独占一行，不要换行续写`,
       `- 左右两边都不能包含 |||`,
       `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
   if (isDual()) {
     return [
@@ -336,12 +340,13 @@ function buildPrompt(mode) {
       `- 每行一个完整短句，必须独占一行，不要换行续写`,
       `- 三列必须是同一句意思的对应翻译，互为翻译、长度大致相当`,
       `- 英语、日语都要自然口语化，适合朗读和影子跟读`,
+      jaFuriganaRule,
       `- 每句尽量短：英语约 6-14 个词；日语约 8-28 个字符`,
       `- 任意一列内部都不能再出现 |||`,
       `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
       `- 中文翻译要简洁自然，贴近原意，不要扩写`,
       `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
   return [
     `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的主题，生成适合 TTS 朗读、复听和跟读的${L}双语短句。`,
@@ -357,11 +362,12 @@ function buildPrompt(mode) {
     `- 每行一个完整短句，必须独占一行，不要换行续写`,
     `- 左右两边都不能包含 |||`,
     `- ${L}部分要自然口语化，适合朗读和影子跟读`,
+    jaFuriganaSingle,
     `- 每句尽量短：${L}${lenHint}`,
     `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
     `- 中文翻译要简洁自然，贴近原意，不要扩写`,
     `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function updatePrompt() {

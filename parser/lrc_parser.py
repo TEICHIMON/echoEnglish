@@ -13,6 +13,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# Furigana annotation like 漢字（かんじ）/ 2024年（にせんにじゅうよねん）: full- or
+# half-width parentheses whose content is entirely kana (hiragana + katakana +
+# the long-vowel mark ー). Only all-kana parentheticals match, so this is a
+# no-op for English/Chinese and for Japanese without furigana.
+_FURIGANA_RE = re.compile(r"[（(][぀-ヿ]+[)）]")
+
+
+def strip_furigana(text: str) -> str:
+    """Remove parenthetical kana readings (furigana) from text.
+
+    Kept in the subtitle for readability, but stripped before TTS so the
+    reading kana isn't spoken a second time.
+    """
+    return _FURIGANA_RE.sub("", text)
+
+
 @dataclass
 class Segment:
     """A single subtitle segment with timing and bilingual text."""
@@ -22,6 +38,13 @@ class Segment:
     target_text: str       # target language text (Japanese/English)
     native_text: str       # native language text (Chinese)
     role: str = ""         # optional speaker role, e.g. "q" / "a" in interview mode
+    target_tts_text: str = ""  # target text for TTS; furigana stripped (see __post_init__)
+
+    def __post_init__(self) -> None:
+        # Keep furigana in target_text (shown in the LRC subtitle) but feed a
+        # kana-stripped version to TTS so the reading isn't spoken twice.
+        if not self.target_tts_text:
+            self.target_tts_text = strip_furigana(self.target_text)
 
     @property
     def start_sec(self) -> float:
