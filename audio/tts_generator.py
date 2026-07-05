@@ -759,7 +759,9 @@ def generate_target_audio(
     else:
         work_dir.mkdir(parents=True, exist_ok=True)
 
-    texts = [seg.target_text for seg in segments]
+    # Use the furigana-stripped variant so parenthetical kana readings in the
+    # subtitle (e.g. 漢字（かんじ）) aren't spoken twice.
+    texts = [seg.target_tts_text for seg in segments]
 
     if engine == "google":
         return _run_google_batch(
