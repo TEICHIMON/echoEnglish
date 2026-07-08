@@ -149,6 +149,7 @@ function applyDefaults(defaults) {
   }
   splitTouched = false;
   updateDefaultLabels();
+  updateVoiceUI();
   updatePrompt();
 }
 
@@ -172,6 +173,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
     currentMode = tab.dataset.mode;
     updateDualUI();
     updateContentPlaceholders();
+    updateVoiceUI();
     updateDefaultLabels();
     syncPromptCountUI();
     updatePrompt();
@@ -211,6 +213,27 @@ function updateContentPlaceholders() {
     $("formatHint").innerHTML =
       '格式：<code>目标语言|||中文</code>，每行一条，<code>#</code> 开头为注释。';
   }
+}
+
+// The effective TTS engine = explicit pick, else the config default.
+function effectiveEngine() {
+  return $("engine").value || (appDefaults && appDefaults.engine) || "google";
+}
+
+// Voice (Chirp3-HD persona) pickers. Text mode shows one voice; interview mode
+// shows Q + A. Persona swapping only affects Google voices, so the selects are
+// disabled (and a hint shown) for the edge / openai engines.
+function updateVoiceUI() {
+  const interview = currentMode === "interview";
+  $("voiceFieldText").classList.toggle("hidden", interview);
+  $("voiceFieldQ").classList.toggle("hidden", !interview);
+  $("voiceFieldA").classList.toggle("hidden", !interview);
+
+  const isGoogle = effectiveEngine() === "google";
+  ["voice", "qVoice", "aVoice"].forEach((id) => {
+    $(id).disabled = !isGoogle;
+  });
+  $("voiceHint").classList.toggle("hidden", isGoogle);
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +456,7 @@ $("copyExamPromptBtn").addEventListener("click", async () => {
 $("variant").addEventListener("change", (e) => {
   $("customRepeats").classList.toggle("hidden", e.target.value !== "custom");
 });
+$("engine").addEventListener("change", updateVoiceUI);
 $("split").addEventListener("change", () => {
   splitTouched = true;
 });
@@ -461,6 +485,15 @@ function collectRequest() {
   if (dual) req.dual = true;
   if (!dual && $("lang").value) req.lang = $("lang").value;
   if ($("engine").value) req.engine = $("engine").value;
+
+  // Voice (Google Chirp3-HD persona). Skipped when the picker is disabled
+  // (non-Google engine). Text mode -> one voice; interview -> Q + A.
+  if (currentMode === "interview") {
+    if (!$("qVoice").disabled && $("qVoice").value) req.q_voice = $("qVoice").value;
+    if (!$("aVoice").disabled && $("aVoice").value) req.a_voice = $("aVoice").value;
+  } else if (!$("voice").disabled && $("voice").value) {
+    req.voice = $("voice").value;
+  }
 
   const loop = {};
   const variant = $("variant").value;
@@ -671,6 +704,7 @@ function escapeHtml(s) {
 async function init() {
   updateDualUI();
   updateContentPlaceholders();
+  updateVoiceUI();
   syncPromptCountUI();
   updatePrompt();
   loadExamPrompt();

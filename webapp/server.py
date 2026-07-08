@@ -94,6 +94,9 @@ class JobRequest(BaseModel):
     dual: bool | None = Field(None, description="generate EN + JA audio from one trilingual script (text or interview mode)")
     lang: str | None = None
     engine: str | None = None
+    voice: str | None = Field(None, description="text mode: Google Chirp3-HD persona for the target voice")
+    q_voice: str | None = Field(None, description="interview mode: Google persona for the Q / interviewer voice")
+    a_voice: str | None = Field(None, description="interview mode: Google persona for the A / interviewee voice")
     loop: LoopOptions | None = None
     timing: TimingOptions | None = None
     gain: float | None = None
