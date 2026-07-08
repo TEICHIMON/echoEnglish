@@ -100,6 +100,17 @@ OPENAI_VOICES: tuple[str, ...] = (
     "fable", "nova", "onyx", "sage", "shimmer", "verse",
 )
 
+# Google Chirp3-HD "persona" names offered for user voice selection. A Chirp3-HD
+# voice name is <region>-Chirp3-HD-<persona> (e.g. en-US-Chirp3-HD-Puck), and the
+# language code is derived from the region prefix. Swapping only the persona keeps
+# the timbre choice independent of the target language, so a selected voice can
+# never mismatch the text's language. These personas exist for en-US / ja-JP /
+# cmn-CN. First four are male, last four female.
+GOOGLE_PERSONAS: tuple[str, ...] = (
+    "Charon", "Puck", "Fenrir", "Orus",     # male
+    "Kore", "Aoede", "Leda", "Zephyr",      # female
+)
+
 
 def load_config(config_path: str | Path | None = None) -> dict:
     """Load configuration from YAML file, falling back to defaults."""
@@ -501,6 +512,21 @@ def _apply_interview_language_preset(config: dict, lang: str) -> None:
             config["interview"]["openai"]["interviewer_voice"] = openai["interviewer_voice"]
         if openai.get("interviewee_voice"):
             config["interview"]["openai"]["interviewee_voice"] = openai["interviewee_voice"]
+
+
+def google_voice_with_persona(voice_name: str, persona: str) -> str:
+    """Swap the persona of a Google Chirp3-HD voice name, keeping its region.
+
+    ``en-US-Chirp3-HD-Puck`` + ``Charon`` -> ``en-US-Chirp3-HD-Charon``.
+    The region/language prefix is preserved, so the result always matches the
+    text's language. Non-Chirp3-HD names (e.g. edge's ``ja-JP-NanamiNeural``) and
+    empty personas are returned unchanged.
+    """
+    if not persona:
+        return voice_name
+    if "Chirp3-HD-" in voice_name:
+        return f"{voice_name.rsplit('-', 1)[0]}-{persona}"
+    return voice_name
 
 
 def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:

@@ -132,6 +132,7 @@ input:focus, textarea:focus, select:focus {
 .field.checkbox span { font-size: 14px; color: var(--text); }
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.grid-full { grid-column: 1 / -1; }
 .field-row { display: flex; gap: 10px; }
 .field-row .field { flex: 1; }
 

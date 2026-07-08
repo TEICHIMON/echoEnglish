@@ -92,6 +92,56 @@
             </select>
           </label>
 
+          <!-- Voice (Chirp3-HD persona) pickers. Persona only — language/region
+               stays from the target-language preset, so the voice always matches
+               the text. Shown per mode: text -> one voice; interview -> Q + A. -->
+          <label class="field voice-field" id="voiceFieldText">
+            <span>音色（Google）</span>
+            <select id="voice">
+              <option value="">（用配置默认）</option>
+              <option value="Charon">Charon（男声·沉稳）</option>
+              <option value="Puck">Puck（男声·明亮）</option>
+              <option value="Fenrir">Fenrir（男声·浑厚）</option>
+              <option value="Orus">Orus（男声·平稳）</option>
+              <option value="Kore">Kore（女声·柔和）</option>
+              <option value="Aoede">Aoede（女声·清亮）</option>
+              <option value="Leda">Leda（女声·温柔）</option>
+              <option value="Zephyr">Zephyr（女声·轻快）</option>
+            </select>
+          </label>
+
+          <label class="field voice-field hidden" id="voiceFieldQ">
+            <span>提问者音色 Q（Google）</span>
+            <select id="qVoice">
+              <option value="">（用配置默认）</option>
+              <option value="Charon">Charon（男声·沉稳）</option>
+              <option value="Puck">Puck（男声·明亮）</option>
+              <option value="Fenrir">Fenrir（男声·浑厚）</option>
+              <option value="Orus">Orus（男声·平稳）</option>
+              <option value="Kore">Kore（女声·柔和）</option>
+              <option value="Aoede">Aoede（女声·清亮）</option>
+              <option value="Leda">Leda（女声·温柔）</option>
+              <option value="Zephyr">Zephyr（女声·轻快）</option>
+            </select>
+          </label>
+
+          <label class="field voice-field hidden" id="voiceFieldA">
+            <span>回答者音色 A（Google）</span>
+            <select id="aVoice">
+              <option value="">（用配置默认）</option>
+              <option value="Charon">Charon（男声·沉稳）</option>
+              <option value="Puck">Puck（男声·明亮）</option>
+              <option value="Fenrir">Fenrir（男声·浑厚）</option>
+              <option value="Orus">Orus（男声·平稳）</option>
+              <option value="Kore">Kore（女声·柔和）</option>
+              <option value="Aoede">Aoede（女声·清亮）</option>
+              <option value="Leda">Leda（女声·温柔）</option>
+              <option value="Zephyr">Zephyr（女声·轻快）</option>
+            </select>
+          </label>
+
+          <p class="hint grid-full hidden" id="voiceHint">音色仅对 Google 引擎生效，其他引擎使用配置默认音色。</p>
+
           <label class="field">
             <span>循环模式</span>
             <select id="variant">

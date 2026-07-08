@@ -36,6 +36,8 @@ from main import (
     load_config,
     run_text_mode,
     run_interview_mode,
+    google_voice_with_persona,
+    GOOGLE_PERSONAS,
     _apply_target_language_preset,
     _apply_interview_language_preset,
 )
@@ -391,7 +393,41 @@ class JobManager:
             config.setdefault("sync", {})
             config["sync"]["label"] = slug
 
+        # Custom Google voice (persona) picked in the UI. Applied last so it wins
+        # over the language presets above. Dual runs re-apply presets per language
+        # in _run_dual, so the override is re-applied there too.
+        self._apply_voice_overrides(config, req)
+
         return config
+
+    def _apply_voice_overrides(self, config: dict, req: dict) -> None:
+        """Swap in the user-picked Google Chirp3-HD persona(s).
+
+        Only the persona (timbre) is user-controlled — the language/region comes
+        from the already-applied preset, so the voice can never mismatch the
+        text's language. Personas outside the whitelist are ignored. No-op for
+        non-Google engines (the helper leaves non-Chirp3-HD names unchanged).
+        """
+        google = config.get("tts", {}).get("google")
+        interview_google = config.get("interview", {}).get("google")
+
+        voice = req.get("voice")
+        if voice in GOOGLE_PERSONAS and isinstance(google, dict):
+            google["target_voice"] = google_voice_with_persona(
+                google.get("target_voice", ""), voice
+            )
+
+        if isinstance(interview_google, dict):
+            q_voice = req.get("q_voice")
+            if q_voice in GOOGLE_PERSONAS:
+                interview_google["interviewer_voice"] = google_voice_with_persona(
+                    interview_google.get("interviewer_voice", ""), q_voice
+                )
+            a_voice = req.get("a_voice")
+            if a_voice in GOOGLE_PERSONAS:
+                interview_google["interviewee_voice"] = google_voice_with_persona(
+                    interview_google.get("interviewee_voice", ""), a_voice
+                )
 
     def _run_dual(
         self, job: Job, base_config: dict, input_path: Path, slug: str, mode: str = "text"
@@ -454,6 +490,9 @@ class JobManager:
         for lang, path in (("en", en_path), ("ja", ja_path)):
             cfg = copy.deepcopy(base_config)
             apply_preset(cfg, lang)
+            # apply_preset overwrites the target/Q/A voices with the language
+            # preset, so re-apply the user's persona on top (per language).
+            self._apply_voice_overrides(cfg, job.request)
             cfg["paths"][path_key] = str(path)
             runner(cfg)
 
