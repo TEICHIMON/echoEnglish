@@ -34,6 +34,12 @@ jobs:
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
             git pull --ff-only
+            # BuildKit resolves FROM metadata against registry-1.docker.io even
+            # when the base image is cached locally, which times out on this
+            # VPS. The legacy builder trusts the local cache, so force it —
+            # but fail loudly first if the cached base image ever goes missing.
+            docker image inspect python:3.12-slim > /dev/null
+            export DOCKER_BUILDKIT=0
             # Build before `up` so a failed build leaves the running container
             # untouched.
             docker compose build
