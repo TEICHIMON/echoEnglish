@@ -274,6 +274,9 @@ function buildPrompt(mode) {
   const topicExample = mode === "interview" ? "后端工程师，5 年经验" : `${L} 日常购物对话`;
   const jaFuriganaRule = `- 日语汉字和数字都要注音：在汉字 / 数字后用全角括号标注平假名读音，如 漢字（かんじ）、2024年（にせんにじゅうよねん）；纯假名和片假名外来语（カタカナ）不用注`;
   const jaFuriganaSingle = langCode === "ja" ? jaFuriganaRule : null;
+  const acronymRule = `- 缩写词一律全大写，如 ID、API、SQL、URL、AWS，绝不要写成 id、api（小写会被 TTS 当成普通单词读错音）`;
+  const jaNaturalRule = `- 日语必须是日本人日常会说的自然日语，严禁英日混杂：技术概念用日本工程师惯用的片假名或汉字说法（如 データベース、認証、負荷分散、排他制御），不要在日语句子里原样夹英文单词或英文短语；只有 ID、API、SQL 这类日本人口语中也直接使用的缩写可以保留`;
+  const jaNaturalSingle = langCode === "ja" ? jaNaturalRule : null;
   if (mode === "interview") {
     const rounds = promptCount("interview");
     if (isDual()) {
@@ -307,6 +310,8 @@ function buildPrompt(mode) {
         `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
         `- 英语、日语都要适合朗读：口语化、节奏清楚`,
         jaFuriganaRule,
+        jaNaturalRule,
+        acronymRule,
         `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
         `- 每条内容必须独占一行，不要换行续写`,
         `- 任意一列内部都不能再出现 |||`,
@@ -342,6 +347,8 @@ function buildPrompt(mode) {
       `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
       `- ${L}部分要适合朗读：口语化、节奏清楚`,
       jaFuriganaSingle,
+      jaNaturalSingle,
+      acronymRule,
       `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
       `- 每条内容必须独占一行，不要换行续写`,
       `- 左右两边都不能包含 |||`,
@@ -364,6 +371,8 @@ function buildPrompt(mode) {
       `- 三列必须是同一句意思的对应翻译，互为翻译、长度大致相当`,
       `- 英语、日语都要自然口语化，适合朗读和影子跟读`,
       jaFuriganaRule,
+      jaNaturalRule,
+      acronymRule,
       `- 每句尽量短：英语约 6-14 个词；日语约 8-28 个字符`,
       `- 任意一列内部都不能再出现 |||`,
       `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
@@ -386,6 +395,8 @@ function buildPrompt(mode) {
     `- 左右两边都不能包含 |||`,
     `- ${L}部分要自然口语化，适合朗读和影子跟读`,
     jaFuriganaSingle,
+    jaNaturalSingle,
+    acronymRule,
     `- 每句尽量短：${L}${lenHint}`,
     `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
     `- 中文翻译要简洁自然，贴近原意，不要扩写`,
