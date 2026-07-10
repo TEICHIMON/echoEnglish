@@ -1,12 +1,14 @@
 name: Deploy
 
-# SSHes into the VPS, pulls the latest code, and builds the image right there.
-# No registry is involved at deploy time: the VPS's route to Docker Hub
-# (registry-1.docker.io) fails with TLS handshake timeouts, and pushing to
-# GHCR just to pull it back on the same box adds a dependency for nothing.
-# The python:3.12-slim base image is already in the VPS's local Docker cache
-# (from the original manual build), so `docker compose build` never needs to
-# reach Docker Hub. Don't clear that cached base image.
+# Builds the image ON the VPS. The VPS cannot reach Docker Hub (TLS handshake
+# timeouts on registry-1.docker.io) while its GitHub route is fine, so nothing
+# in this pipeline touches a registry from the VPS side:
+#   1. the runner (which reaches Docker Hub fine) pulls python:3.12-slim and
+#      ships it to the VPS as a tarball over SCP — this doubles as the base
+#      image's update channel;
+#   2. the VPS loads it and builds with the legacy builder (BuildKit would
+#      still try to resolve FROM metadata against Docker Hub even when the
+#      image is local).
 on:
   push:
     branches: [main]
@@ -20,6 +22,22 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Export the base image on the runner
+        run: |
+          docker pull python:3.12-slim
+          docker save python:3.12-slim | gzip > python-3.12-slim.tar.gz
+          ls -lh python-3.12-slim.tar.gz
+
+      - name: Ship the base image to the VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          source: python-3.12-slim.tar.gz
+          target: ${{ secrets.DEPLOY_PATH }}
+
       - name: Build and deploy on VPS over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -34,11 +52,10 @@ jobs:
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
             git pull --ff-only
-            # BuildKit resolves FROM metadata against registry-1.docker.io even
-            # when the base image is cached locally, which times out on this
-            # VPS. The legacy builder trusts the local cache, so force it —
-            # but fail loudly first if the cached base image ever goes missing.
-            docker image inspect python:3.12-slim > /dev/null
+            docker load < python-3.12-slim.tar.gz
+            rm -f python-3.12-slim.tar.gz
+            # Legacy builder: trusts the just-loaded local base image instead
+            # of phoning Docker Hub for FROM metadata like BuildKit does.
             export DOCKER_BUILDKIT=0
             # Build before `up` so a failed build leaves the running container
             # untouched.
