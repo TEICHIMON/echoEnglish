@@ -1,84 +1,45 @@
-name: Build and Deploy
+name: Deploy
 
-# Builds the web UI image, pushes it to Docker Hub, then SSHes into the VPS and
-# rolls it out — so a push to main deploys in real time.
+# SSHes into the VPS, pulls the latest code, and builds the image right there.
+# No registry is involved at deploy time: the VPS's route to Docker Hub
+# (registry-1.docker.io) fails with TLS handshake timeouts, and pushing to
+# GHCR just to pull it back on the same box adds a dependency for nothing.
+# The python:3.12-slim base image is already in the VPS's local Docker cache
+# (from the original manual build), so `docker compose build` never needs to
+# reach Docker Hub. Don't clear that cached base image.
 on:
   push:
     branches: [main]
-    # Skip rebuilds for doc-only / CLI-only changes that don't affect the image.
+    # Skip deploys for doc-only / CLI-only changes that don't affect the image.
     paths-ignore:
       - "**/*.md"
       - "logs/**"
   workflow_dispatch: {}
 
-env:
-  IMAGE: sudami/echo_english
-  # The VPS pulls from GHCR (its route to Docker Hub is unreliable — TLS
-  # handshake timeouts — while its route to GitHub works). Must be lowercase.
-  GHCR_IMAGE: ghcr.io/teichimon/echo_english
-
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.GHCR_IMAGE }}:latest
-            ${{ env.GHCR_IMAGE }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
   deploy:
-    needs: build-and-push
     runs-on: ubuntu-latest
-    permissions:
-      packages: read
     steps:
-      - name: Deploy over SSH
+      - name: Build and deploy on VPS over SSH
         uses: appleboy/ssh-action@v1.2.0
-        env:
-          GHCR_USER: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT || '22' }}
-          envs: GHCR_USER,GHCR_TOKEN
+          # pip install of requirements-web can be slow on a small VPS; the
+          # action's default 10m command timeout is too tight for a cold build.
+          command_timeout: 30m
           script: |
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
             git pull --ff-only
-            # GHCR packages are private by default; the workflow's GITHUB_TOKEN
-            # is valid for the duration of this run and lets the VPS pull.
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            docker compose pull
+            # Build before `up` so a failed build leaves the running container
+            # untouched.
+            docker compose build
             docker compose up -d
-            docker logout ghcr.io
+            # Clean up: drop the registry-tagged images left over from the old
+            # pull-based deploys (no longer referenced by compose), then any
+            # dangling layers from superseded builds.
+            docker image rm ghcr.io/teichimon/echo_english:latest sudami/echo_english:latest 2>/dev/null || true
             docker image prune -f

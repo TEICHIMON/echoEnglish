@@ -1,11 +1,10 @@
 services:
   echo-web:
-    # Pulled from GHCR by CI/CD (GitHub Actions builds + pushes on every push
-    # to main; the image is also mirrored to Docker Hub as sudami/echo_english).
-    # GHCR is used because the VPS's route to Docker Hub times out. For local
-    # development you can still build it yourself with
-    # `docker compose up -d --build`.
-    image: ghcr.io/teichimon/echo_english:latest
+    # Built locally by CI/CD (GitHub Actions SSHes into the VPS and runs
+    # `docker compose build` there — the VPS can't reach Docker Hub, so no
+    # registry is involved). The tag is purely local; `docker compose up -d
+    # --build` works the same for local development.
+    image: echo_english:latest
     build: .
     container_name: echo-loop-web
     restart: unless-stopped
