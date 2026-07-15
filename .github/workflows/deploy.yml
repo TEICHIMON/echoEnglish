@@ -52,6 +52,21 @@ jobs:
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
             git pull --ff-only
+
+            # CloudCone workaround: its affected network path drops packets at
+            # the normal 1500-byte MTU. Apply 1400 before Docker downloads any
+            # packages. Persist this separately on the VPS so reboots are also
+            # covered when no deployment follows immediately.
+            IFACE=$(ip -4 route show default | awk 'NR == 1 {print $5}')
+            test -n "$IFACE"
+            if [ "$(id -u)" -eq 0 ]; then
+              ip link set dev "$IFACE" mtu 1400
+            else
+              sudo -n ip link set dev "$IFACE" mtu 1400
+            fi
+            ip link show dev "$IFACE"
+            export DOCKER_MTU=1400
+
             docker load < python-3.12-slim.tar.gz
             rm -f python-3.12-slim.tar.gz
             # Legacy builder: trusts the just-loaded local base image instead
@@ -60,6 +75,9 @@ jobs:
             # Build before `up` so a failed build leaves the running container
             # untouched.
             docker compose build
+            # Recreate the Compose bridge so a changed DOCKER_MTU is applied.
+            # `down` without `-v` preserves the bind-mounted application data.
+            docker compose down
             docker compose up -d
             # Clean up: drop the registry-tagged images left over from the old
             # pull-based deploys (no longer referenced by compose), then any
