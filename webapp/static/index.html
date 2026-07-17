@@ -3,15 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0f1117" />
+  <meta name="theme-color" content="#f5f6f8" />
   <title>Echo Loop 生成器</title>
+  <!-- Set the theme before CSS paints to avoid a light flash for dark users. -->
+  <script>try{if(localStorage.getItem("echoTheme")==="dark")document.documentElement.dataset.theme="dark";}catch(e){}</script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main class="app">
     <header class="topbar">
       <h1>🔁 Echo Loop</h1>
-      <button id="settingsBtn" class="icon-btn" title="设置" aria-label="设置">⚙️</button>
+      <div class="topbar-actions">
+        <button id="themeBtn" class="icon-btn" title="切换深浅色" aria-label="切换深浅色">🌙</button>
+        <button id="settingsBtn" class="icon-btn" title="设置" aria-label="设置">⚙️</button>
+      </div>
     </header>
 
     <section id="settingsPanel" class="panel hidden">
@@ -32,6 +37,13 @@
       <details class="options promptbox" id="promptBox">
         <summary>📋 让 AI 帮你写文字稿（复制提示词）</summary>
         <p class="hint">复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」、「目标语言」以及下面的数量自动调整。</p>
+        <label class="field hidden" id="interviewStyleField">
+          <span>面试类型</span>
+          <select id="interviewStyle">
+            <option value="general" selected>通用面试（八股 + 项目 + deep dive）</option>
+            <option value="sysdesign">系统设计 (FDE)（需求澄清 → API → 数据库 → deep dive）</option>
+          </select>
+        </label>
         <label class="field prompt-count">
           <span id="promptCountLabel">问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）</span>
           <input id="promptCount" type="number" min="1" max="60" value="24" inputmode="numeric" />
