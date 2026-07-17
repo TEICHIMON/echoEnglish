@@ -1,4 +1,19 @@
 :root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --panel-2: #eef0f4;
+  --border: #d9dde5;
+  --text: #1c2230;
+  --muted: #5f6b7e;
+  --accent: #3f6fe0;
+  --accent-2: #2f57b8;
+  --ok: #1f9d63;
+  --err: #d94848;
+  --warn: #b06e10;
+  --radius: 14px;
+}
+
+:root[data-theme="dark"] {
   --bg: #0f1117;
   --panel: #181b24;
   --panel-2: #20242f;
@@ -10,7 +25,6 @@
   --ok: #3ecf8e;
   --err: #ff6b6b;
   --warn: #ffb454;
-  --radius: 14px;
 }
 
 * { box-sizing: border-box; }
@@ -41,6 +55,7 @@ html, body {
   padding: 4px 2px;
 }
 .topbar h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
+.topbar-actions { display: flex; gap: 4px; }
 
 .icon-btn {
   background: transparent;

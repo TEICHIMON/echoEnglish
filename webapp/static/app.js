@@ -163,6 +163,27 @@ async function loadConfigDefaults() {
 }
 
 // ---------------------------------------------------------------------------
+// Theme (light default, dark opt-in, persisted; index.html pre-applies it)
+// ---------------------------------------------------------------------------
+
+const THEME_KEY = "echoTheme";
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  $("themeBtn").textContent = theme === "dark" ? "☀️" : "🌙";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = theme === "dark" ? "#0f1117" : "#f5f6f8";
+}
+
+applyTheme(localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
+
+$("themeBtn").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+});
+
+// ---------------------------------------------------------------------------
 // Tabs + options UI
 // ---------------------------------------------------------------------------
 
@@ -265,13 +286,22 @@ function syncPromptCountUI() {
     label.textContent = "句子数量";
   }
   input.value = promptCounts[currentMode];
+  $("interviewStyleField").classList.toggle("hidden", currentMode !== "interview");
+}
+
+// Interview prompt flavor: general Q&A vs scenario-driven system design (FDE).
+function interviewStyle() {
+  return $("interviewStyle").value || "general";
 }
 
 function buildPrompt(mode) {
   const L = langWord();
   const langCode = $("lang").value || currentDefaultLang();
   const lenHint = langCode === "ja" ? "约 8-28 个字符" : "约 6-14 个词";
-  const topicExample = mode === "interview" ? "后端工程师，5 年经验" : `${L} 日常购物对话`;
+  const sysdesign = mode === "interview" && interviewStyle() === "sysdesign";
+  const topicExample = mode === "interview"
+    ? (sysdesign ? "设计一个订单实时状态跟踪系统" : "后端工程师，5 年经验")
+    : `${L} 日常购物对话`;
   const jaFuriganaRule = `- 日语汉字和数字都要注音：在汉字 / 数字后用全角括号标注平假名读音，如 漢字（かんじ）、2024年（にせんにじゅうよねん）；纯假名和片假名外来语（カタカナ）不用注`;
   const jaFuriganaSingle = langCode === "ja" ? jaFuriganaRule : null;
   const acronymRule = `- 缩写词一律全大写，如 ID、API、SQL、URL、AWS，绝不要写成 id、api（小写会被 TTS 当成普通单词读错音）`;
@@ -279,11 +309,34 @@ function buildPrompt(mode) {
   const jaNaturalSingle = langCode === "ja" ? jaNaturalRule : null;
   if (mode === "interview") {
     const rounds = promptCount("interview");
+    const topicLabel = sysdesign ? "设计题目/客户场景" : "岗位/主题";
+    const roleWord = sysdesign
+      ? "同时也是一位资深系统设计面试官（或提出需求的客户）"
+      : "同时也是一位资深技术面试官";
+    const taskWord = sysdesign ? "系统设计模拟对话" : "模拟面试问答";
+    // 「深度与覆盖」section swaps with the 面试类型 sub-option; everything else
+    // (register red lines, format rules, furigana) is shared between styles.
+    const depthSection = sysdesign
+      ? [
+          `场景与流程（核心要求——系统设计 / FDE mock）：`,
+          `- 这是一场场景驱动的系统设计对话：Q 是面试官/客户，A 是候选人。第一个 Q 必须以客户口吻给出一个模糊的业务需求，不要一上来就把细节说全`,
+          `- 按四阶段循序推进：① 需求澄清（功能与非功能需求、量级与约束估算）→ ② 核心实体与 API 设计 → ③ 高层架构与数据库设计（表结构、主键、索引、缓存、分片/读写分离的取舍）→ ④ deep dive 深挖（瓶颈在哪、量级扩大十倍会怎样、失败场景、监控与降级）`,
+          `- 需求澄清阶段的 A 必须包含澄清性反问：候选人先确认需求再动手设计，例如问清「实时」是几秒还是毫秒、读写比例、峰值量级、可以容忍什么样的不一致`,
+          `- 讨论选型时使用固定的 trade-off 句型并反复出现：It depends on…；The trade-off here is X versus Y；That works, but it breaks down when…；Let me make sure I understand: you need X and the constraint is Y`,
+          `- 每个设计决策都要给理由和取舍，不要只报方案名；数据库设计要落到具体的表、主键、索引，并说明为什么这样建`,
+        ]
+      : [
+          `面试深度与覆盖（核心要求）：`,
+          `- 对标资深 / 高级工程师面试：考机制原理、设计选型、trade-off、复杂度、并发与一致性、容错、可观测性、真实生产经验，不要停留在「是什么」的层面`,
+          `- 循序渐进、分阶段推进：自我介绍 / 项目背景 → 基础概念 → 设计与机制 → 取舍与选型 → 边界与失败场景 → 性能与扩展 → deep dive 深挖`,
+          `- 后段必须包含「深挖」：针对前面的某个回答继续追问，例如「为什么这样选」「如果量级再大十倍会怎样」「线上踩过什么坑」「还有没有更好的方案」`,
+          `- 问得深也要问得广：从基础到系统设计再到工程实践都要覆盖，避免反复在同一个点上打转`,
+        ];
     if (isDual()) {
       return [
-        `你是 Echo Loop 跟读训练材料生成助手，同时也是一位资深技术面试官。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的「英语 + 日语 + 中文」三语模拟面试问答。`,
+        `你是 Echo Loop 跟读训练材料生成助手，${roleWord}。请围绕我给的${topicLabel}，生成适合 TTS 朗读和口头跟读的「英语 + 日语 + 中文」三语${taskWord}。`,
         ``,
-        `岗位/主题：【在这里填，例如：后端工程师，5 年经验】`,
+        `${topicLabel}：【在这里填，例如：${topicExample}】`,
         `问题数量：${rounds}（一共 ${rounds} 个 Q，至少 ${rounds} 个，宁多勿少；每个 Q 可以配多条 A）`,
         ``,
         `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 4 条 A）：`,
@@ -291,11 +344,7 @@ function buildPrompt(mode) {
         `A:<英语回答·要点1>|||<对应日语>|||<简体中文翻译>`,
         `A:<英语回答·要点2（同一问题，可选）>|||<对应日语>|||<简体中文翻译>`,
         ``,
-        `面试深度与覆盖（核心要求）：`,
-        `- 对标资深 / 高级工程师面试：考机制原理、设计选型、trade-off、复杂度、并发与一致性、容错、可观测性、真实生产经验，不要停留在「是什么」的层面`,
-        `- 循序渐进、分阶段推进：自我介绍 / 项目背景 → 基础概念 → 设计与机制 → 取舍与选型 → 边界与失败场景 → 性能与扩展 → deep dive 深挖`,
-        `- 后段必须包含「深挖」：针对前面的某个回答继续追问，例如「为什么这样选」「如果量级再大十倍会怎样」「线上踩过什么坑」「还有没有更好的方案」`,
-        `- 问得深也要问得广：从基础到系统设计再到工程实践都要覆盖，避免反复在同一个点上打转`,
+        ...depthSection,
         ``,
         `一问多答（重要）：`,
         `- 一个 Q 往往一句话答不完整、答不准确。对需要展开的问题，请用多条 A 逐点把它答透：通常 2-4 条，越是 deep dive / 系统设计越要多答几条`,
@@ -326,9 +375,9 @@ function buildPrompt(mode) {
       ].filter(Boolean).join("\n");
     }
     return [
-      `你是 Echo Loop 跟读训练材料生成助手，同时也是一位资深技术面试官。请围绕我给的岗位/主题，生成适合 TTS 朗读和口头跟读的${L}模拟面试问答。`,
+      `你是 Echo Loop 跟读训练材料生成助手，${roleWord}。请围绕我给的${topicLabel}，生成适合 TTS 朗读和口头跟读的${L}${taskWord}。`,
       ``,
-      `岗位/主题：【在这里填，例如：${topicExample}】`,
+      `${topicLabel}：【在这里填，例如：${topicExample}】`,
       `问题数量：${rounds}（一共 ${rounds} 个 Q，至少 ${rounds} 个，宁多勿少；每个 Q 可以配多条 A）`,
       ``,
       `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 4 条 A）：`,
@@ -336,11 +385,7 @@ function buildPrompt(mode) {
       `A:<${L}回答·要点1>|||<简体中文翻译>`,
       `A:<${L}回答·要点2（同一问题，可选）>|||<简体中文翻译>`,
       ``,
-      `面试深度与覆盖（核心要求）：`,
-      `- 对标资深 / 高级工程师面试：考机制原理、设计选型、trade-off、复杂度、并发与一致性、容错、可观测性、真实生产经验，不要停留在「是什么」的层面`,
-      `- 循序渐进、分阶段推进：自我介绍 / 项目背景 → 基础概念 → 设计与机制 → 取舍与选型 → 边界与失败场景 → 性能与扩展 → deep dive 深挖`,
-      `- 后段必须包含「深挖」：针对前面的某个回答继续追问，例如「为什么这样选」「如果量级再大十倍会怎样」「线上踩过什么坑」「还有没有更好的方案」`,
-      `- 问得深也要问得广：从基础到系统设计再到工程实践都要覆盖，避免反复在同一个点上打转`,
+      ...depthSection,
       ``,
       `一问多答（重要）：`,
       `- 一个 Q 往往一句话答不完整、答不准确。对需要展开的问题，请用多条 A 逐点把它答透：通常 2-4 条，越是 deep dive / 系统设计越要多答几条`,
@@ -423,6 +468,7 @@ function updatePrompt() {
 }
 
 $("lang").addEventListener("change", updatePrompt);
+$("interviewStyle").addEventListener("change", updatePrompt);
 $("promptCount").addEventListener("input", () => {
   promptCounts[currentMode] = $("promptCount").value;
   updatePrompt();
