@@ -1,16 +1,11 @@
 services:
   echo-web:
-    # Built locally by CI/CD (GitHub Actions SSHes into the VPS and runs
-    # `docker compose build` there — the VPS can't reach Docker Hub, so no
-    # registry is involved). The tag is purely local; `docker compose up -d
-    # --build` works the same for local development.
+    # Built locally by CI/CD after the VPS pulls the base image from Docker
+    # Hub. The tag is purely local; `docker compose up -d --build` works the
+    # same for local development.
     image: echo_english:latest
     build:
       context: .
-      # Package downloads during image builds must inherit the host's reduced
-      # MTU on the affected CloudCone route. Runtime traffic still uses the
-      # Compose bridge configured below.
-      network: host
     container_name: echo-loop-web
     restart: unless-stopped
     # Bind to localhost only — the host's Caddy reverse-proxies your domain to
@@ -50,14 +45,3 @@ services:
       # the host before `up` (copy it from a machine where `rclone config` set up
       # the gdrive: remote). Only used when ECHO_SYNC_METHOD=rclone.
       - ./rclone.conf:/root/.config/rclone/rclone.conf
-
-# CloudCone's affected network path cannot reliably carry 1500-byte frames.
-# Keep the container-side MTU aligned with the host's temporary MTU=1400 fix.
-# The network must be recreated (`docker compose down && docker compose up -d`)
-# before this setting takes effect on an existing deployment.
-networks:
-  default:
-    driver: bridge
-    driver_opts:
-      # Normal machines retain 1500; deploy.yml exports 1400 on CloudCone.
-      com.docker.network.driver.mtu: "${DOCKER_MTU:-1500}"
