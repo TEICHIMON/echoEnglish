@@ -36,14 +36,33 @@
 
       <details class="options promptbox" id="promptBox">
         <summary>📋 让 AI 帮你写文字稿（复制提示词）</summary>
-        <p class="hint">复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」、「目标语言」以及下面的数量自动调整。</p>
-        <label class="field hidden" id="interviewStyleField">
-          <span>面试类型</span>
-          <select id="interviewStyle">
-            <option value="general" selected>通用面试（八股 + 项目 + deep dive）</option>
-            <option value="sysdesign">系统设计 (FDE)（需求澄清 → API → 数据库 → deep dive）</option>
-          </select>
-        </label>
+        <p class="hint" id="promptHelp">复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」、「目标语言」以及下面的数量自动调整。</p>
+        <fieldset class="interview-style hidden" id="interviewStyleField">
+          <legend>面试类型</legend>
+          <div class="interview-style-options">
+            <label class="style-card">
+              <input type="radio" name="interviewStyle" value="general" checked />
+              <span class="style-card-body">
+                <span class="style-card-title">通用面试</span>
+                <span class="style-card-description">八股、项目与 deep dive</span>
+              </span>
+            </label>
+            <label class="style-card">
+              <input type="radio" name="interviewStyle" value="sysdesign" />
+              <span class="style-card-body">
+                <span class="style-card-title">系统设计 / FDE</span>
+                <span class="style-card-description">需求澄清、API、数据库与取舍</span>
+              </span>
+            </label>
+            <label class="style-card">
+              <input type="radio" name="interviewStyle" value="discussion" />
+              <span class="style-card-body">
+                <span class="style-card-title">聊天整理</span>
+                <span class="style-card-description">把技术讨论忠实整理成面试问答</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
         <label class="field prompt-count">
           <span id="promptCountLabel">问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）</span>
           <input id="promptCount" type="number" min="1" max="60" value="24" inputmode="numeric" />

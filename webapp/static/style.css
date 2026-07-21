@@ -191,6 +191,73 @@ input:focus, textarea:focus, select:focus {
 }
 
 /* AI prompt helper */
+.interview-style {
+  min-width: 0;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+}
+.interview-style > legend {
+  margin-bottom: 5px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.interview-style-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.style-card {
+  position: relative;
+  min-width: 0;
+  cursor: pointer;
+}
+.style-card input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.style-card-body {
+  min-height: 76px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.style-card:hover .style-card-body { border-color: var(--muted); }
+.style-card input:checked + .style-card-body {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.style-card input:focus-visible + .style-card-body {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+.style-card:active .style-card-body { transform: scale(.985); }
+.style-card-title {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+.style-card input:checked + .style-card-body .style-card-title { color: var(--accent); }
+.style-card-description {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
 .promptbox .prompt-count { margin: 8px 0 0; }
 .promptbox .prompt-count input { max-width: 120px; }
 .promptbox .prompt-text {
@@ -304,4 +371,6 @@ input:focus, textarea:focus, select:focus {
 @media (max-width: 560px) {
   .grid, .defaults { grid-template-columns: 1fr; }
   .field-row { flex-direction: column; }
+  .interview-style-options { grid-template-columns: 1fr; }
+  .style-card-body { min-height: 0; }
 }
