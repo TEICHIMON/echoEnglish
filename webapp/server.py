@@ -51,6 +51,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Echo Loop Generator", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def revalidate_frontend_assets(request: Request, call_next):
+    """Prevent the HTML shell and its assets from drifting across deploys."""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # --------------------------------------------------------------------------
 # Auth
 # --------------------------------------------------------------------------
