@@ -266,39 +266,53 @@ function langWord() {
   return l === "ja" ? "日语" : l === "en" ? "英语" : "目标语言";
 }
 
-// Count shown in the copy-prompt helper. Remembered per mode: interview mode
-// asks for Q&A rounds (default 24 — long enough for a real deep-dive interview),
-// text mode asks for sentence count. Switching tabs restores that mode's value.
-const promptCounts = { interview: 24, text: 15 };
+// Count shown in the copy-prompt helper. Each interview flavor remembers its
+// own value; a chat transcript usually contains fewer distinct topics than a
+// full mock interview, so discussion starts at 12 instead of 24.
+const promptCounts = { text: 15, general: 24, sysdesign: 24, discussion: 12 };
+
+function promptCountKey(mode) {
+  return mode === "interview" ? interviewStyle() : "text";
+}
 
 function promptCount(mode) {
-  const n = parseInt(promptCounts[mode], 10);
+  const key = promptCountKey(mode);
+  const n = parseInt(promptCounts[key], 10);
   if (Number.isFinite(n) && n > 0) return n;
-  return mode === "interview" ? 24 : 15;
+  return key === "discussion" ? 12 : key === "text" ? 15 : 24;
 }
 
 function syncPromptCountUI() {
   const input = $("promptCount");
   const label = $("promptCountLabel");
   if (currentMode === "interview") {
-    label.textContent = "问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）";
+    label.textContent = interviewStyle() === "discussion"
+      ? "目标问题数量（素材不足时宁少勿编）"
+      : "问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）";
   } else {
     label.textContent = "句子数量";
   }
-  input.value = promptCounts[currentMode];
+  input.value = promptCounts[promptCountKey(currentMode)];
   $("interviewStyleField").classList.toggle("hidden", currentMode !== "interview");
+  $("promptHelp").textContent = currentMode === "interview" && interviewStyle() === "discussion"
+    ? "把下面提示词直接发在原技术会话末尾；如果要在新会话中使用，请把聊天记录粘到提示词末尾。整理结果可以直接粘到下面输入框。"
+    : "复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」、「目标语言」以及下面的数量自动调整。";
 }
 
-// Interview prompt flavor: general Q&A vs scenario-driven system design (FDE).
+// Interview prompt flavor: general Q&A, scenario-driven system design (FDE),
+// or a faithful conversion of an existing technical chat.
 function interviewStyle() {
-  return $("interviewStyle").value || "general";
+  const selected = document.querySelector('input[name="interviewStyle"]:checked');
+  return selected ? selected.value : "general";
 }
 
 function buildPrompt(mode) {
   const L = langWord();
   const langCode = $("lang").value || currentDefaultLang();
   const lenHint = langCode === "ja" ? "约 8-28 个字符" : "约 6-14 个词";
-  const sysdesign = mode === "interview" && interviewStyle() === "sysdesign";
+  const style = mode === "interview" ? interviewStyle() : "";
+  const sysdesign = style === "sysdesign";
+  const discussion = style === "discussion";
   const topicExample = mode === "interview"
     ? (sysdesign ? "设计一个订单实时状态跟踪系统" : "后端工程师，5 年经验")
     : `${L} 日常购物对话`;
@@ -314,9 +328,37 @@ function buildPrompt(mode) {
       ? "同时也是一位资深系统设计面试官（或提出需求的客户）"
       : "同时也是一位资深技术面试官";
     const taskWord = sysdesign ? "系统设计模拟对话" : "模拟面试问答";
-    // 「深度与覆盖」section swaps with the 面试类型 sub-option; everything else
-    // (register red lines, format rules, furigana) is shared between styles.
-    const depthSection = sysdesign
+    const sourceLines = discussion
+      ? [
+          `素材来源：`,
+          `- 如果这条指令发在原技术会话中，以本指令之前的技术讨论为素材`,
+          `- 如果在新会话中使用，以粘贴在本指令末尾【聊天记录】中的内容为素材`,
+          `- 如果两处都没有可用的技术讨论，只回复「请粘贴技术聊天记录」，不要自行编题`,
+        ]
+      : [`${topicLabel}：【在这里填，例如：${topicExample}】`];
+    const countLine = discussion
+      ? `目标问题数量：${rounds}（素材足够时整理为 ${rounds} 个 Q；素材不足时可以更少，宁少勿编；每个 Q 可以配多条 A）`
+      : `问题数量：${rounds}（一共 ${rounds} 个 Q，至少 ${rounds} 个，宁多勿少；每个 Q 可以配多条 A）`;
+    const introDual = discussion
+      ? `你是 Echo Loop 跟读训练材料生成助手，同时也是一位资深技术面试官。请把当前会话中已有的技术讨论，或我附在本指令后的聊天记录，忠实整理成适合 TTS 朗读和口头跟读的「英语 + 日语 + 中文」三语模拟面试问答。`
+      : `你是 Echo Loop 跟读训练材料生成助手，${roleWord}。请围绕我给的${topicLabel}，生成适合 TTS 朗读和口头跟读的「英语 + 日语 + 中文」三语${taskWord}。`;
+    const introSingle = discussion
+      ? `你是 Echo Loop 跟读训练材料生成助手，同时也是一位资深技术面试官。请把当前会话中已有的技术讨论，或我附在本指令后的聊天记录，忠实整理成适合 TTS 朗读和口头跟读的${L}模拟面试问答。`
+      : `你是 Echo Loop 跟读训练材料生成助手，${roleWord}。请围绕我给的${topicLabel}，生成适合 TTS 朗读和口头跟读的${L}${taskWord}。`;
+    // The content-specific section swaps with the selected interview flavor;
+    // register, output format, furigana, and acronym rules stay shared.
+    const depthSection = discussion
+      ? [
+          `聊天整理原则（核心要求）：`,
+          `- 把用户提出的技术问题改写成自然的面试官 Q，把讨论中已经形成的回答整理成候选人 A；追问要紧跟对应主题`,
+          `- 合并重复问题和重复答案，并按「基础概念 → 工作原理 → 设计取舍 → 边界 / 故障场景」重新排序`,
+          `- 以讨论中的最终结论为准；如果后文修正了前文，采用修正后的说法，不要同时保留互相冲突的版本`,
+          `- 忠实保留用户真实提到的项目事实、案例和数字；可以修正明显的技术错误，但不确定时要保守表达或省略`,
+          `- 严禁编造用户没有说过的个人经历、生产事故、项目数据、选型理由或技术细节`,
+          `- 不要为了凑数量强行加入自我介绍、无关八股、系统设计题或素材之外的知识点`,
+          `- 删除寒暄、重复确认和关于聊天过程本身的元话语，只保留可用于技术面试的内容`,
+        ]
+      : sysdesign
       ? [
           `场景与流程（核心要求——系统设计 / FDE mock）：`,
           `- 这是一场场景驱动的系统设计对话：Q 是面试官/客户，A 是候选人。第一个 Q 必须以客户口吻给出一个模糊的业务需求，不要一上来就把细节说全`,
@@ -334,10 +376,10 @@ function buildPrompt(mode) {
         ];
     if (isDual()) {
       return [
-        `你是 Echo Loop 跟读训练材料生成助手，${roleWord}。请围绕我给的${topicLabel}，生成适合 TTS 朗读和口头跟读的「英语 + 日语 + 中文」三语${taskWord}。`,
+        introDual,
         ``,
-        `${topicLabel}：【在这里填，例如：${topicExample}】`,
-        `问题数量：${rounds}（一共 ${rounds} 个 Q，至少 ${rounds} 个，宁多勿少；每个 Q 可以配多条 A）`,
+        ...sourceLines,
+        countLine,
         ``,
         `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 4 条 A）：`,
         `Q:<面试官的英语问题>|||<对应日语问题>|||<简体中文翻译>`,
@@ -347,7 +389,9 @@ function buildPrompt(mode) {
         ...depthSection,
         ``,
         `一问多答（重要）：`,
-        `- 一个 Q 往往一句话答不完整、答不准确。对需要展开的问题，请用多条 A 逐点把它答透：通常 2-4 条，越是 deep dive / 系统设计越要多答几条`,
+        discussion
+          ? `- 一个 Q 往往一句话答不完整。只在原讨论确实包含多个要点时拆成 2-4 条 A；不要用扩写来凑答案`
+          : `- 一个 Q 往往一句话答不完整、答不准确。对需要展开的问题，请用多条 A 逐点把它答透：通常 2-4 条，越是 deep dive / 系统设计越要多答几条`,
         `- 每条 A 都必须独占一行、各自以 A: 开头、各自带完整的三列（英语|||日语|||中文）；绝不要把多个要点塞进同一行，也不要写没有 A: 前缀的续行`,
         `- 多条 A 之间要有逻辑推进（先结论、再机制 / 取舍、再边界 / 数字 / 生产经验），合起来内容资深、语言简单`,
         ``,
@@ -372,13 +416,15 @@ function buildPrompt(mode) {
         `- 每条内容必须独占一行，不要换行续写`,
         `- 任意一列内部都不能再出现 |||`,
         `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
+        discussion ? `` : null,
+        discussion ? `【聊天记录（在原会话中使用可留空；在新会话中请粘贴到这里）】` : null,
       ].filter(Boolean).join("\n");
     }
     return [
-      `你是 Echo Loop 跟读训练材料生成助手，${roleWord}。请围绕我给的${topicLabel}，生成适合 TTS 朗读和口头跟读的${L}${taskWord}。`,
+      introSingle,
       ``,
-      `${topicLabel}：【在这里填，例如：${topicExample}】`,
-      `问题数量：${rounds}（一共 ${rounds} 个 Q，至少 ${rounds} 个，宁多勿少；每个 Q 可以配多条 A）`,
+      ...sourceLines,
+      countLine,
       ``,
       `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 4 条 A）：`,
       `Q:<面试官的${L}问题>|||<简体中文翻译>`,
@@ -388,7 +434,9 @@ function buildPrompt(mode) {
       ...depthSection,
       ``,
       `一问多答（重要）：`,
-      `- 一个 Q 往往一句话答不完整、答不准确。对需要展开的问题，请用多条 A 逐点把它答透：通常 2-4 条，越是 deep dive / 系统设计越要多答几条`,
+      discussion
+        ? `- 一个 Q 往往一句话答不完整。只在原讨论确实包含多个要点时拆成 2-4 条 A；不要用扩写来凑答案`
+        : `- 一个 Q 往往一句话答不完整、答不准确。对需要展开的问题，请用多条 A 逐点把它答透：通常 2-4 条，越是 deep dive / 系统设计越要多答几条`,
       `- 每条 A 都必须独占一行、各自以 A: 开头、各自带完整的两列（${L}|||中文）；绝不要把多个要点塞进同一行，也不要写没有 A: 前缀的续行`,
       `- 多条 A 之间要有逻辑推进（先结论、再机制 / 取舍、再边界 / 数字 / 生产经验），合起来内容资深、语言简单`,
       ``,
@@ -412,6 +460,8 @@ function buildPrompt(mode) {
       `- 每条内容必须独占一行，不要换行续写`,
       `- 左右两边都不能包含 |||`,
       `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
+      discussion ? `` : null,
+      discussion ? `【聊天记录（在原会话中使用可留空；在新会话中请粘贴到这里）】` : null,
     ].filter(Boolean).join("\n");
   }
   if (isDual()) {
@@ -468,9 +518,27 @@ function updatePrompt() {
 }
 
 $("lang").addEventListener("change", updatePrompt);
-$("interviewStyle").addEventListener("change", updatePrompt);
+const interviewStyleInputs = [...document.querySelectorAll('input[name="interviewStyle"]')];
+interviewStyleInputs.forEach((input, index) => {
+  input.addEventListener("change", () => {
+    syncPromptCountUI();
+    updatePrompt();
+  });
+  input.addEventListener("keydown", (event) => {
+    const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
+    const forwards = event.key === "ArrowRight" || event.key === "ArrowDown";
+    if (!backwards && !forwards) return;
+    event.preventDefault();
+    const offset = backwards ? -1 : 1;
+    const nextIndex = (index + offset + interviewStyleInputs.length) % interviewStyleInputs.length;
+    const next = interviewStyleInputs[nextIndex];
+    next.checked = true;
+    next.focus();
+    next.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+});
 $("promptCount").addEventListener("input", () => {
-  promptCounts[currentMode] = $("promptCount").value;
+  promptCounts[promptCountKey(currentMode)] = $("promptCount").value;
   updatePrompt();
 });
 $("dual").addEventListener("change", () => {
