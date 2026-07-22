@@ -309,7 +309,9 @@ function interviewStyle() {
 function buildPrompt(mode) {
   const L = langWord();
   const langCode = $("lang").value || currentDefaultLang();
-  const lenHint = langCode === "ja" ? "约 8-28 个字符" : "约 6-14 个词";
+  const lenHint = langCode === "ja"
+    ? "约 8-36 个字符"
+    : "通常 6-16 个词，必要时最多 18 个词";
   const style = mode === "interview" ? interviewStyle() : "";
   const sysdesign = style === "sysdesign";
   const discussion = style === "discussion";
@@ -321,6 +323,14 @@ function buildPrompt(mode) {
   const acronymRule = `- 缩写词一律全大写，如 ID、API、SQL、URL、AWS，绝不要写成 id、api（小写会被 TTS 当成普通单词读错音）`;
   const jaNaturalRule = `- 日语必须是日本人日常会说的自然日语，严禁英日混杂：技术概念用日本工程师惯用的片假名或汉字说法（如 データベース、認証、負荷分散、排他制御），不要在日语句子里原样夹英文单词或英文短语；只有 ID、API、SQL 这类日本人口语中也直接使用的缩写可以保留`;
   const jaNaturalSingle = langCode === "ja" ? jaNaturalRule : null;
+  const enInterviewRule = `- 每条 A 的英语通常 10-16 个词，必要时最多 18 个词，简单内容可以更短；每行保持一个主旨，可以带一个表示原因、条件、时间或转折的简单从句，但不要嵌套从句或长关系从句`;
+  const jaInterviewRule = `- 每条 A 的日语使用自然口语的です・ます体，一句保持一个主旨；可以带一个表示原因、条件、时间或转折的简短表达，但不要使用嵌套从句或长连体修饰`;
+  const enConnectorRule = `- 英语优先使用常见、自然、容易说出口的连接词，如 and、but、so、because、if、when、while、although、for example、first / second / third、that's why；这些是优先选择，不是硬性白名单`;
+  const singleInterviewRule = langCode === "ja" ? jaInterviewRule : enInterviewRule;
+  const enConnectorSingle = langCode === "en" ? enConnectorRule : null;
+  const simpleClauseSingle = langCode === "ja"
+    ? `- 允许用一个简短的原因、条件、时间或转折表达把意思说完整，但不要嵌套从句或使用长连体修饰`
+    : `- 允许用一个简单的原因、条件、时间或转折从句把意思说完整，但不要嵌套从句或使用长关系从句`;
   if (mode === "interview") {
     const rounds = promptCount("interview");
     const topicLabel = sysdesign ? "设计题目/客户场景" : "岗位/主题";
@@ -381,7 +391,7 @@ function buildPrompt(mode) {
         ...sourceLines,
         countLine,
         ``,
-        `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 4 条 A）：`,
+        `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 5 条 A）：`,
         `Q:<面试官的英语问题>|||<对应日语问题>|||<简体中文翻译>`,
         `A:<英语回答·要点1>|||<对应日语>|||<简体中文翻译>`,
         `A:<英语回答·要点2（同一问题，可选）>|||<对应日语>|||<简体中文翻译>`,
@@ -390,29 +400,30 @@ function buildPrompt(mode) {
         ``,
         `一问多答（重要）：`,
         discussion
-          ? `- 一个 Q 往往一句话答不完整。只在原讨论确实包含多个要点时拆成 2-4 条 A；不要用扩写来凑答案`
-          : `- 一个 Q 往往一句话答不完整、答不准确。对需要展开的问题，请用多条 A 逐点把它答透：通常 2-4 条，越是 deep dive / 系统设计越要多答几条`,
+          ? `- 简单回答用 1-2 条 A；只在原讨论确实包含多个要点时拆成 3-5 条 A，不要用扩写来凑答案`
+          : `- 简单问题用 1-2 条 A；需要解释机制、取舍或边界的复杂问题通常用 3-5 条 A 逐点答透，越是 deep dive / 系统设计越要把逻辑讲完整`,
         `- 每条 A 都必须独占一行、各自以 A: 开头、各自带完整的三列（英语|||日语|||中文）；绝不要把多个要点塞进同一行，也不要写没有 A: 前缀的续行`,
-        `- 多条 A 之间要有逻辑推进（先结论、再机制 / 取舍、再边界 / 数字 / 生产经验），合起来内容资深、语言简单`,
+        `- 多条 A 之间要有逻辑推进（先结论、再原因 / 机制、再取舍、再边界 / 例子 / 生产经验），合起来内容资深、解释完整、语言简单`,
         ``,
         `语域红线（非母语跟读材料——最重要的一节，逐条遵守）：`,
         `- 这些句子是给非母语者跟读、并要在真实面试里亲口说出来的：写「非母语者紧张时也能说出口的句子」，不是母语播音稿；语言简单 ≠ 内容初级，资深感来自机制、取舍、数字和生产经验，不来自词汇`,
-        `- 每条 A 的英语 ≤12 个词、单句单从句，不要嵌套从句；日语一句只讲一个意思、です・ます体、不要长连体修饰`,
+        enInterviewRule,
+        jaInterviewRule,
         `- 词汇用最常用的高频词 + 真实技术术语（Kafka、JWT、API、replay、idempotency 这类照留）；禁止习语、谚语和书面修辞`,
         `- 禁用包装词：spearheaded、leveraged、mission-critical、cutting-edge、world-class、seamlessly、state-of-the-art`,
-        `- 英语连接词只用：and、but、so、because、for example、first / second / third、that's why`,
+        enConnectorRule,
         ``,
         `格式与朗读要求：`,
         `- 每行以 Q: 或 A: 开头；顺序是「一个 Q，紧跟它的若干条 A」，再下一个 Q`,
         `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文，共三列`,
         `- 三列必须是同一句意思的对应翻译，英语和日语互为翻译`,
-        `- 每个 Q 控制在 1 句口语：即使是深挖追问，也用一句自然的话问出来，避免复杂从句、括号、斜杠和难读符号`,
+        `- 每个 Q 控制在 1 句自然口语；必要时可以带一个简单逻辑从句，但不要嵌套，也要避免括号、斜杠和难读符号`,
         `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
         `- 英语、日语都要适合朗读：口语化、节奏清楚`,
         jaFuriganaRule,
         jaNaturalRule,
         acronymRule,
-        `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
+        `- 中文翻译要简洁自然、完整对应英语和日语的信息，不要额外扩写原文没有的内容`,
         `- 每条内容必须独占一行，不要换行续写`,
         `- 任意一列内部都不能再出现 |||`,
         `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
@@ -426,7 +437,7 @@ function buildPrompt(mode) {
       ...sourceLines,
       countLine,
       ``,
-      `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 4 条 A）：`,
+      `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 5 条 A）：`,
       `Q:<面试官的${L}问题>|||<简体中文翻译>`,
       `A:<${L}回答·要点1>|||<简体中文翻译>`,
       `A:<${L}回答·要点2（同一问题，可选）>|||<简体中文翻译>`,
@@ -435,28 +446,28 @@ function buildPrompt(mode) {
       ``,
       `一问多答（重要）：`,
       discussion
-        ? `- 一个 Q 往往一句话答不完整。只在原讨论确实包含多个要点时拆成 2-4 条 A；不要用扩写来凑答案`
-        : `- 一个 Q 往往一句话答不完整、答不准确。对需要展开的问题，请用多条 A 逐点把它答透：通常 2-4 条，越是 deep dive / 系统设计越要多答几条`,
+        ? `- 简单回答用 1-2 条 A；只在原讨论确实包含多个要点时拆成 3-5 条 A，不要用扩写来凑答案`
+        : `- 简单问题用 1-2 条 A；需要解释机制、取舍或边界的复杂问题通常用 3-5 条 A 逐点答透，越是 deep dive / 系统设计越要把逻辑讲完整`,
       `- 每条 A 都必须独占一行、各自以 A: 开头、各自带完整的两列（${L}|||中文）；绝不要把多个要点塞进同一行，也不要写没有 A: 前缀的续行`,
-      `- 多条 A 之间要有逻辑推进（先结论、再机制 / 取舍、再边界 / 数字 / 生产经验），合起来内容资深、语言简单`,
+      `- 多条 A 之间要有逻辑推进（先结论、再原因 / 机制、再取舍、再边界 / 例子 / 生产经验），合起来内容资深、解释完整、语言简单`,
       ``,
       `语域红线（非母语跟读材料——最重要的一节，逐条遵守）：`,
       `- 这些句子是给非母语者跟读、并要在真实面试里亲口说出来的：写「非母语者紧张时也能说出口的句子」，不是母语播音稿；语言简单 ≠ 内容初级，资深感来自机制、取舍、数字和生产经验，不来自词汇`,
-      `- 每条 A 的${L} ≤1 个短句：英语 ≤12 个词、单句单从句，不要嵌套从句；日语一句只讲一个意思、です・ます体、不要长连体修饰`,
+      singleInterviewRule,
       `- 词汇用最常用的高频词 + 真实技术术语（Kafka、JWT、API、replay、idempotency 这类照留）；禁止习语、谚语和书面修辞`,
       `- 禁用包装词：spearheaded、leveraged、mission-critical、cutting-edge、world-class、seamlessly、state-of-the-art`,
-      `- 英语连接词只用：and、but、so、because、for example、first / second / third、that's why`,
+      enConnectorSingle,
       ``,
       `格式与朗读要求：`,
       `- 每行以 Q: 或 A: 开头；顺序是「一个 Q，紧跟它的若干条 A」，再下一个 Q`,
       `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
-      `- 每个 Q 控制在 1 句口语：即使是深挖追问，也用一句自然的话问出来，避免复杂从句、括号、斜杠和难读符号`,
+      `- 每个 Q 控制在 1 句自然口语；必要时可以带一个简单逻辑从句，但不要嵌套，也要避免括号、斜杠和难读符号`,
       `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
       `- ${L}部分要适合朗读：口语化、节奏清楚`,
       jaFuriganaSingle,
       jaNaturalSingle,
       acronymRule,
-      `- 中文翻译要简洁自然，方便快速理解，不要扩写`,
+      `- 中文翻译要简洁自然、完整对应${L}的信息，不要额外扩写原文没有的内容`,
       `- 每条内容必须独占一行，不要换行续写`,
       `- 左右两边都不能包含 |||`,
       `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
@@ -482,10 +493,11 @@ function buildPrompt(mode) {
       jaFuriganaRule,
       jaNaturalRule,
       acronymRule,
-      `- 每句尽量短：英语约 6-14 个词；日语约 8-28 个字符`,
+      `- 每句保持适合跟读的长度：英语通常 6-16 个词，必要时最多 18 个词；日语约 8-36 个字符`,
+      `- 允许用一个简单的原因、条件、时间或转折从句把意思说完整，但不要嵌套从句、写长关系从句或长连体修饰`,
       `- 任意一列内部都不能再出现 |||`,
       `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
-      `- 中文翻译要简洁自然，贴近原意，不要扩写`,
+      `- 中文翻译要简洁自然、完整对应英语和日语的信息，不要额外扩写原文没有的内容`,
       `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
     ].filter(Boolean).join("\n");
   }
@@ -506,9 +518,10 @@ function buildPrompt(mode) {
     jaFuriganaSingle,
     jaNaturalSingle,
     acronymRule,
-    `- 每句尽量短：${L}${lenHint}`,
+    `- 每句保持适合跟读的长度：${L}${lenHint}`,
+    simpleClauseSingle,
     `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
-    `- 中文翻译要简洁自然，贴近原意，不要扩写`,
+    `- 中文翻译要简洁自然、完整对应${L}的信息，不要额外扩写原文没有的内容`,
     `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
   ].filter(Boolean).join("\n");
 }
