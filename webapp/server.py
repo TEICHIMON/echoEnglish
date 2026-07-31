@@ -107,6 +107,9 @@ class JobRequest(BaseModel):
     voice: str | None = Field(None, description="text mode: Google Chirp3-HD persona for the target voice")
     q_voice: str | None = Field(None, description="interview mode: Google persona for the Q / interviewer voice")
     a_voice: str | None = Field(None, description="interview mode: Google persona for the A / interviewee voice")
+    rate: float | None = Field(None, description="text mode: speech-rate multiplier for the target voice (0.25-4.0)")
+    q_rate: float | None = Field(None, description="interview mode: speech-rate multiplier for the Q / interviewer voice")
+    a_rate: float | None = Field(None, description="interview mode: speech-rate multiplier for the A / interviewee voice")
     loop: LoopOptions | None = None
     timing: TimingOptions | None = None
     gain: float | None = None
@@ -206,6 +209,11 @@ def _ui_config_defaults() -> dict:
         "tts": {
             "gain": tts.get("gain", 0),
             "normalize": tts.get("normalize"),
+            "target_rate": tts.get("target_rate"),
+        },
+        "interview": {
+            "interviewer_rate": config.get("interview", {}).get("interviewer_rate"),
+            "interviewee_rate": config.get("interview", {}).get("interviewee_rate"),
         },
         "output": config.get("output", {}),
         "sync": {

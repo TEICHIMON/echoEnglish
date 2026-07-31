@@ -9,7 +9,7 @@
   <script>try{if(localStorage.getItem("echoTheme")==="dark")document.documentElement.dataset.theme="dark";}catch(e){}</script>
   <!-- Keep the query version in sync for CSS/JS releases so a newly deployed
        HTML shell can never run against stale cached assets. -->
-  <link rel="stylesheet" href="/static/style.css?v=20260722-balanced-prompt-1" />
+  <link rel="stylesheet" href="/static/style.css?v=20260731-spoken-q-rate-1" />
 </head>
 <body>
   <main class="app">
@@ -65,6 +65,14 @@
             </label>
           </div>
         </fieldset>
+        <!-- Asymmetric register: Q is what you must UNDERSTAND, A is what you
+             must SAY. Loosening only Q buys listening difficulty without making
+             the answers unspeakable. -->
+        <label class="field checkbox hidden" id="spokenQField">
+          <input id="spokenQ" type="checkbox" />
+          <span>面试官问题用真实口语（听力难度：小句连缀、句尾省略、填充词；回答仍是干净短句）</span>
+        </label>
+
         <label class="field prompt-count">
           <span id="promptCountLabel">问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）</span>
           <input id="promptCount" type="number" min="1" max="60" value="24" inputmode="numeric" />
@@ -175,6 +183,27 @@
 
           <p class="hint grid-full hidden" id="voiceHint">音色仅对 Google 引擎生效，其他引擎使用配置默认音色。</p>
 
+          <!-- Speech rate. Applies to the target voice only — the Chinese
+               narration stays at engine speed so it remains easy to follow.
+               Text mode -> one rate; interview -> Q + A, so the interviewer can
+               run fast (listening practice) while the answers stay shadowable. -->
+          <label class="field rate-field" id="rateFieldText">
+            <span>语速（0.25–4.0）</span>
+            <input id="rate" type="number" step="0.05" min="0.25" max="4" inputmode="decimal" />
+          </label>
+
+          <label class="field rate-field hidden" id="rateFieldQ">
+            <span>提问者语速 Q</span>
+            <input id="qRate" type="number" step="0.05" min="0.25" max="4" inputmode="decimal" />
+          </label>
+
+          <label class="field rate-field hidden" id="rateFieldA">
+            <span>回答者语速 A</span>
+            <input id="aRate" type="number" step="0.05" min="0.25" max="4" inputmode="decimal" />
+          </label>
+
+          <p class="hint grid-full" id="rateHint">语速只作用于目标语言，中文翻译始终保持正常速度。练听力可把提问者调到 1.15–1.25。</p>
+
           <label class="field">
             <span>循环模式</span>
             <select id="variant">
@@ -232,6 +261,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260722-balanced-prompt-1"></script>
+  <script src="/static/app.js?v=20260731-spoken-q-rate-1"></script>
 </body>
 </html>

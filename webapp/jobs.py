@@ -36,6 +36,7 @@ from main import (
     load_config,
     run_text_mode,
     run_interview_mode,
+    coerce_speaking_rate,
     google_voice_with_persona,
     GOOGLE_PERSONAS,
     _apply_target_language_preset,
@@ -397,6 +398,7 @@ class JobManager:
         # over the language presets above. Dual runs re-apply presets per language
         # in _run_dual, so the override is re-applied there too.
         self._apply_voice_overrides(config, req)
+        self._apply_rate_overrides(config, req)
 
         return config
 
@@ -428,6 +430,24 @@ class JobManager:
                 interview_google["interviewee_voice"] = google_voice_with_persona(
                     interview_google.get("interviewee_voice", ""), a_voice
                 )
+
+    def _apply_rate_overrides(self, config: dict, req: dict) -> None:
+        """Apply the speech-rate multipliers picked in the UI.
+
+        Text mode has one target rate; interview mode has one per role, which is
+        what lets the interviewer run fast (listening practice) while the answers
+        stay at a speed you can shadow. Out-of-range or unparseable values are
+        dropped by ``coerce_speaking_rate``, leaving the config default in place.
+        """
+        rate = coerce_speaking_rate(req.get("rate"))
+        if rate is not None:
+            config["tts"]["target_rate"] = rate
+
+        interview = config.setdefault("interview", {})
+        for key, field in (("q_rate", "interviewer_rate"), ("a_rate", "interviewee_rate")):
+            role_rate = coerce_speaking_rate(req.get(key))
+            if role_rate is not None:
+                interview[field] = role_rate
 
     def _run_dual(
         self, job: Job, base_config: dict, input_path: Path, slug: str, mode: str = "text"
@@ -493,6 +513,7 @@ class JobManager:
             # apply_preset overwrites the target/Q/A voices with the language
             # preset, so re-apply the user's persona on top (per language).
             self._apply_voice_overrides(cfg, job.request)
+            self._apply_rate_overrides(cfg, job.request)
             cfg["paths"][path_key] = str(path)
             runner(cfg)
 

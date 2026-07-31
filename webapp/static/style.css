@@ -148,6 +148,7 @@ input:focus, textarea:focus, select:focus {
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .grid-full { grid-column: 1 / -1; }
+.rate-field input { max-width: 140px; }
 .field-row { display: flex; gap: 10px; }
 .field-row .field { flex: 1; }
 
@@ -260,6 +261,9 @@ input:focus, textarea:focus, select:focus {
 }
 .promptbox .prompt-count { margin: 8px 0 0; }
 .promptbox .prompt-count input { max-width: 120px; }
+.promptbox .checkbox { margin: 10px 0 0; align-items: flex-start; }
+.promptbox .checkbox input { margin-top: 2px; }
+.promptbox .checkbox span { font-size: 13px; line-height: 1.45; }
 .promptbox .prompt-text {
   white-space: pre-wrap;
   word-break: break-word;

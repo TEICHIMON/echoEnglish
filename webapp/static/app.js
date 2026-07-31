@@ -90,6 +90,13 @@ function volumeLabel(tts) {
   return `${gain > 0 ? "+" : ""}${gain} dB`;
 }
 
+// Placeholder for a speech-rate box: the configured value if there is one,
+// else the value it falls back to, else plain engine speed.
+function rateLabel(value, fallback) {
+  const effective = value ?? fallback;
+  return effective ? `配置默认：${effective}` : "1.0（正常语速）";
+}
+
 function timingLabel(timing) {
   if (!timing) return "配置默认";
   return `${timing.after_first_target}s / ${timing.after_native}s / ${timing.after_second_target}s`;
@@ -121,6 +128,14 @@ function updateDefaultLabels() {
   setDefaultOption("variant", `（配置默认：${loopLabel(appDefaults.loop)}）`);
 
   $("gain").placeholder = `配置默认：${volumeLabel(appDefaults.tts)}`;
+  $("rate").placeholder = rateLabel(appDefaults.tts && appDefaults.tts.target_rate);
+  const interviewDefaults = appDefaults.interview || {};
+  $("qRate").placeholder = rateLabel(
+    interviewDefaults.interviewer_rate, appDefaults.tts && appDefaults.tts.target_rate,
+  );
+  $("aRate").placeholder = rateLabel(
+    interviewDefaults.interviewee_rate, appDefaults.tts && appDefaults.tts.target_rate,
+  );
   $("t1").placeholder = appDefaults.timing.after_first_target;
   $("t2").placeholder = appDefaults.timing.after_native;
   $("t3").placeholder = appDefaults.timing.after_second_target;
@@ -250,6 +265,12 @@ function updateVoiceUI() {
   $("voiceFieldQ").classList.toggle("hidden", !interview);
   $("voiceFieldA").classList.toggle("hidden", !interview);
 
+  // Speech rate follows the same text/interview split, but works on every
+  // engine (unlike the Google-only persona pickers), so it is never disabled.
+  $("rateFieldText").classList.toggle("hidden", interview);
+  $("rateFieldQ").classList.toggle("hidden", !interview);
+  $("rateFieldA").classList.toggle("hidden", !interview);
+
   const isGoogle = effectiveEngine() === "google";
   ["voice", "qVoice", "aVoice"].forEach((id) => {
     $(id).disabled = !isGoogle;
@@ -294,6 +315,11 @@ function syncPromptCountUI() {
   }
   input.value = promptCounts[promptCountKey(currentMode)];
   $("interviewStyleField").classList.toggle("hidden", currentMode !== "interview");
+  // Spoken-Q only makes sense when a script is being written from scratch — in
+  // 聊天整理 the questions come from a real transcript, not from the model.
+  $("spokenQField").classList.toggle(
+    "hidden", currentMode !== "interview" || interviewStyle() === "discussion",
+  );
   $("promptHelp").textContent = currentMode === "interview" && interviewStyle() === "discussion"
     ? "把下面提示词直接发在原技术会话末尾；如果要在新会话中使用，请把聊天记录粘到提示词末尾。整理结果可以直接粘到下面输入框。"
     : "复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」、「目标语言」以及下面的数量自动调整。";
@@ -304,6 +330,12 @@ function syncPromptCountUI() {
 function interviewStyle() {
   const selected = document.querySelector('input[name="interviewStyle"]:checked');
   return selected ? selected.value : "general";
+}
+
+// Real-speech register for the interviewer's lines. Ignored while the toggle is
+// hidden (text mode, or 聊天整理 where the questions come from a real transcript).
+function spokenQ() {
+  return $("spokenQ").checked && !$("spokenQField").classList.contains("hidden");
 }
 
 function buildPrompt(mode) {
@@ -384,6 +416,37 @@ function buildPrompt(mode) {
           `- 后段必须包含「深挖」：针对前面的某个回答继续追问，例如「为什么这样选」「如果量级再大十倍会怎样」「线上踩过什么坑」「还有没有更好的方案」`,
           `- 问得深也要问得广：从基础到系统设计再到工程实践都要覆盖，避免反复在同一个点上打转`,
         ];
+    // Asymmetric register. Q is what the learner must UNDERSTAND, so it can
+    // carry real-speech features; A is what the learner must SAY, so it keeps
+    // the plain short-sentence rules above. Off by default.
+    const wantsSpokenQ = spokenQ();
+    const spokenQFeatures = {
+      ja: `- 日语 Q 用这些真实特征：接续不断句（〜んですけど / 〜まして / 〜ていて / 〜とか / あと / で / ということで）、句尾省略（〜と。／〜ということで。／〜みたいな。／〜んですけど。）、口语缩约（〜ている→〜てる、という→っていう、〜てしまう→〜ちゃう、〜なければ→〜なきゃ）、填充词（まあ / なんか / ちょっと / そうですね / えっと）`,
+      en: `- 英语 Q 用这些真实特征：用 and / so / but 把小句串下去而不是逐句断开、句尾收在半空（…, or something like that. ／ …, right? ／ …, if that makes sense.）、口语缩读（gonna / kind of / a bit of）、填充词（so / I mean / you know / basically / actually）`,
+    };
+    const spokenQLength = (dual) => dual
+      ? `- 每条 Q 的长度：英语约 25-60 个词，日语约 40-110 个字符；超出就拆成下一个 Q，不要写成一整段独白`
+      : langCode === "ja"
+      ? `- 每条 Q 的日语约 40-110 个字符；超出就拆成下一个 Q，不要写成一整段独白`
+      : `- 每条 Q 的英语约 25-60 个词；超出就拆成下一个 Q，不要写成一整段独白`;
+    const spokenQSection = (dual) => !wantsSpokenQ ? [] : [
+      ``,
+      `面试官口语实感（只作用于 Q 行；A 行仍严格遵守上面的语域红线，不要放松）：`,
+      `- Q 要写成「真人边想边说」的样子，不是念稿：允许 2-4 个小句连缀成一条，中间不收尾，最后才落到问题上`,
+      `- 常见节奏是「先铺垫、再抛问题」：先讲一段团队 / 项目 / 场景的背景，最后一句才是真正要问的那句`,
+      `- 允许省略助词，允许把句尾的判断部分省掉、让句子停在半空`,
+      `- 允许说到一半改口重启（自我修复），但整份稿子里只出现 2-3 次，不要每条都有`,
+      `- 填充词适量：大约每 3 条 Q 有 1 条带填充词，不要条条都塞`,
+      ...(dual ? [spokenQFeatures.en, spokenQFeatures.ja]
+        : [langCode === "ja" ? spokenQFeatures.ja : spokenQFeatures.en]),
+      spokenQLength(dual),
+      dual
+        ? `- 英语和日语各自用本语言自然的口语方式表达同一个意思，不要把填充词逐字对译；中文那一列必须干净完整、把话说清楚，作为听不懂时的对照`
+        : `- 中文那一列必须干净完整、把话说清楚，作为听不懂时的对照，不要跟着写成口语碎句`,
+    ];
+    const qFormatRule = wantsSpokenQ
+      ? `- 每个 Q 按上面「面试官口语实感」一节来写；无论多长都必须写在同一行里，也要避免括号、斜杠和难读符号`
+      : `- 每个 Q 控制在 1 句自然口语；必要时可以带一个简单逻辑从句，但不要嵌套，也要避免括号、斜杠和难读符号`;
     if (isDual()) {
       return [
         introDual,
@@ -412,12 +475,13 @@ function buildPrompt(mode) {
         `- 词汇用最常用的高频词 + 真实技术术语（Kafka、JWT、API、replay、idempotency 这类照留）；禁止习语、谚语和书面修辞`,
         `- 禁用包装词：spearheaded、leveraged、mission-critical、cutting-edge、world-class、seamlessly、state-of-the-art`,
         enConnectorRule,
+        ...spokenQSection(true),
         ``,
         `格式与朗读要求：`,
         `- 每行以 Q: 或 A: 开头；顺序是「一个 Q，紧跟它的若干条 A」，再下一个 Q`,
         `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文，共三列`,
         `- 三列必须是同一句意思的对应翻译，英语和日语互为翻译`,
-        `- 每个 Q 控制在 1 句自然口语；必要时可以带一个简单逻辑从句，但不要嵌套，也要避免括号、斜杠和难读符号`,
+        qFormatRule,
         `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
         `- 英语、日语都要适合朗读：口语化、节奏清楚`,
         jaFuriganaRule,
@@ -429,7 +493,7 @@ function buildPrompt(mode) {
         `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
         discussion ? `` : null,
         discussion ? `【聊天记录（在原会话中使用可留空；在新会话中请粘贴到这里）】` : null,
-      ].filter(Boolean).join("\n");
+      ].filter((line) => line !== null).join("\n");
     }
     return [
       introSingle,
@@ -457,11 +521,12 @@ function buildPrompt(mode) {
       `- 词汇用最常用的高频词 + 真实技术术语（Kafka、JWT、API、replay、idempotency 这类照留）；禁止习语、谚语和书面修辞`,
       `- 禁用包装词：spearheaded、leveraged、mission-critical、cutting-edge、world-class、seamlessly、state-of-the-art`,
       enConnectorSingle,
+      ...spokenQSection(false),
       ``,
       `格式与朗读要求：`,
       `- 每行以 Q: 或 A: 开头；顺序是「一个 Q，紧跟它的若干条 A」，再下一个 Q`,
       `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
-      `- 每个 Q 控制在 1 句自然口语；必要时可以带一个简单逻辑从句，但不要嵌套，也要避免括号、斜杠和难读符号`,
+      qFormatRule,
       `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
       `- ${L}部分要适合朗读：口语化、节奏清楚`,
       jaFuriganaSingle,
@@ -473,7 +538,7 @@ function buildPrompt(mode) {
       `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
       discussion ? `` : null,
       discussion ? `【聊天记录（在原会话中使用可留空；在新会话中请粘贴到这里）】` : null,
-    ].filter(Boolean).join("\n");
+    ].filter((line) => line !== null).join("\n");
   }
   if (isDual()) {
     return [
@@ -499,7 +564,7 @@ function buildPrompt(mode) {
       `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
       `- 中文翻译要简洁自然、完整对应英语和日语的信息，不要额外扩写原文没有的内容`,
       `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
-    ].filter(Boolean).join("\n");
+    ].filter((line) => line !== null).join("\n");
   }
   return [
     `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的主题，生成适合 TTS 朗读、复听和跟读的${L}双语短句。`,
@@ -523,7 +588,7 @@ function buildPrompt(mode) {
     `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
     `- 中文翻译要简洁自然、完整对应${L}的信息，不要额外扩写原文没有的内容`,
     `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
-  ].filter(Boolean).join("\n");
+  ].filter((line) => line !== null).join("\n");
 }
 
 function updatePrompt() {
@@ -550,6 +615,7 @@ interviewStyleInputs.forEach((input, index) => {
     next.dispatchEvent(new Event("change", { bubbles: true }));
   });
 });
+$("spokenQ").addEventListener("change", updatePrompt);
 $("promptCount").addEventListener("input", () => {
   promptCounts[promptCountKey(currentMode)] = $("promptCount").value;
   updatePrompt();
@@ -643,8 +709,11 @@ function collectRequest() {
   if (currentMode === "interview") {
     if (!$("qVoice").disabled && $("qVoice").value) req.q_voice = $("qVoice").value;
     if (!$("aVoice").disabled && $("aVoice").value) req.a_voice = $("aVoice").value;
-  } else if (!$("voice").disabled && $("voice").value) {
-    req.voice = $("voice").value;
+    if ($("qRate").value !== "") req.q_rate = parseFloat($("qRate").value);
+    if ($("aRate").value !== "") req.a_rate = parseFloat($("aRate").value);
+  } else {
+    if (!$("voice").disabled && $("voice").value) req.voice = $("voice").value;
+    if ($("rate").value !== "") req.rate = parseFloat($("rate").value);
   }
 
   const loop = {};

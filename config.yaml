@@ -38,6 +38,12 @@ tts:
   rate: "+0%"                          # Speech rate adjustment (-50% to +50%)
   pitch: "+0Hz"                        # Pitch adjustment
 
+  # Speech-rate multiplier for the TARGET voice only (0.25–4.0; 1.0 = normal).
+  # The Chinese narration is deliberately left at engine speed so it stays easy
+  # to follow. Empty = no override. Interview mode can go further and set a
+  # different rate per role — see interview.interviewer_rate below.
+  target_rate:
+
   # --- Google Cloud TTS settings (used when engine: "google") ---
   google:
     target_voice: "ja-JP-Chirp3-HD-Charon"    # Japanese male Chirp3-HD
@@ -154,6 +160,13 @@ interview:
   # tts.native_voice / tts.google.native_voice / tts.openai.voice.
   interviewer_voice: "en-US-GuyNeural"       # edge-tts interviewer
   interviewee_voice: "en-US-JennyNeural"     # edge-tts interviewee
+
+  # Per-role speech-rate multipliers (0.25–4.0; empty = tts.target_rate, then
+  # engine default). Raising only the interviewer makes the QUESTIONS harder to
+  # catch — closer to how a real interviewer sounds — while the answers stay at
+  # a speed you can actually shadow. ~1.15–1.25 is a realistic interviewer.
+  interviewer_rate:
+  interviewee_rate:
   google:
     interviewer_voice: "en-US-Chirp3-HD-Charon"
     interviewee_voice: "en-US-Chirp3-HD-Kore"
