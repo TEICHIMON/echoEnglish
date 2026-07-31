@@ -111,6 +111,36 @@ GOOGLE_PERSONAS: tuple[str, ...] = (
     "Kore", "Aoede", "Leda", "Zephyr",      # female
 )
 
+# Speech-rate multiplier bounds. 1.0 = the engine's normal speed; Google and
+# OpenAI both accept 0.25–4.0, and edge-tts is given the equivalent percentage.
+RATE_MIN = 0.25
+RATE_MAX = 4.0
+
+
+def coerce_speaking_rate(value) -> float | None:
+    """Clamp a user-supplied speech-rate multiplier, or None if unset/invalid."""
+    if value is None or value == "":
+        return None
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(RATE_MIN, min(RATE_MAX, rate))
+
+
+def apply_speaking_rate(config: dict, rate: float | None) -> None:
+    """Set one speech-rate multiplier across all three TTS engines.
+
+    Google and OpenAI take the multiplier directly; edge-tts wants a signed
+    percentage delta, so 1.15 becomes "+15%". No-op when ``rate`` is None.
+    """
+    rate = coerce_speaking_rate(rate)
+    if rate is None:
+        return
+    config["tts"]["google"]["speaking_rate"] = rate
+    config["tts"]["openai"]["speed"] = rate
+    config["tts"]["rate"] = f"{(rate - 1.0) * 100:+.0f}%"
+
 
 def load_config(config_path: str | Path | None = None) -> dict:
     """Load configuration from YAML file, falling back to defaults."""
@@ -153,6 +183,10 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "lang_presets": copy.deepcopy(LANG_PRESETS),
             "gain": 0,
             "normalize": None,
+            # Speech-rate multiplier applied to the TARGET voice only (the
+            # native/Chinese narration keeps the engine default, so it stays
+            # comfortable to follow). None = no override.
+            "target_rate": None,
         },
         "output": {
             "format": "m4a",
@@ -189,6 +223,11 @@ def load_config(config_path: str | Path | None = None) -> dict:
                 "interviewee_voice": "coral",
             },
             "presets": copy.deepcopy(INTERVIEW_LANG_PRESETS),
+            # Per-role speech-rate multipliers. Raising only the interviewer
+            # makes the questions harder to follow (listening practice) while
+            # the answers stay at a speed you can shadow. None = engine default.
+            "interviewer_rate": None,
+            "interviewee_rate": None,
         },
     }
 
@@ -263,6 +302,11 @@ def load_config(config_path: str | Path | None = None) -> dict:
 
     tts["google"]["speaking_rate"] = float(tts["google"].get("speaking_rate", 1.0))
     tts["google"]["pitch"] = float(tts["google"].get("pitch", 0.0))
+
+    tts["target_rate"] = coerce_speaking_rate(tts.get("target_rate"))
+    interview = defaults["interview"]
+    interview["interviewer_rate"] = coerce_speaking_rate(interview.get("interviewer_rate"))
+    interview["interviewee_rate"] = coerce_speaking_rate(interview.get("interviewee_rate"))
 
     sync = defaults["sync"]
     # Environment overrides (used by the VPS/Docker deployment so the committed
@@ -959,10 +1003,17 @@ def _is_interview_config(config: dict) -> bool:
 
 
 def _config_for_interview_role(config: dict, role: str) -> dict:
-    """Return config with the target TTS voice set for one interview role."""
+    """Return config with the target TTS voice and speed set for one role.
+
+    Only the target audio goes through here, so a per-role speech rate never
+    affects the Chinese narration.
+    """
     interview = config.get("interview", {})
     c = copy.deepcopy(config)
     is_answer = role == "a"
+
+    rate_key = "interviewee_rate" if is_answer else "interviewer_rate"
+    apply_speaking_rate(c, interview.get(rate_key) or c["tts"].get("target_rate"))
 
     edge_key = "interviewee_voice" if is_answer else "interviewer_voice"
     c["tts"]["target_voice"] = interview.get(edge_key) or c["tts"]["target_voice"]
@@ -1343,6 +1394,20 @@ def _volume_label(config: dict) -> str:
     return "default"
 
 
+def _rate_label(config: dict) -> str:
+    """Active speech-rate overrides, or '' when every voice is at engine speed."""
+    parts = []
+    target_rate = config["tts"].get("target_rate")
+    if target_rate is not None:
+        parts.append(f"target x{target_rate:g}")
+    if _is_interview_config(config):
+        interview = config.get("interview", {})
+        for key, label in (("interviewer_rate", "Q"), ("interviewee_rate", "A")):
+            if interview.get(key) is not None:
+                parts.append(f"{label} x{interview[key]:g}")
+    return ", ".join(parts)
+
+
 def _engine_label(config: dict) -> str:
     engine = config["tts"]["engine"]
     if _is_interview_config(config):
@@ -1498,6 +1563,16 @@ def _tts_engine_kwargs(config: dict) -> dict:
         "openai_config": config["tts"]["openai"],
         "google_config": config["tts"]["google"],
     }
+
+
+def _config_with_target_rate(config: dict) -> dict:
+    """Config with ``tts.target_rate`` applied, or the original when unset."""
+    rate = config["tts"].get("target_rate")
+    if rate is None:
+        return config
+    c = copy.deepcopy(config)
+    apply_speaking_rate(c, rate)
+    return c
 
 
 def _assemble_export_one(
@@ -1708,6 +1783,8 @@ def run_text_mode(config: dict) -> None:
             logger.info(f"  Target TTS: {config['tts']['target_voice']}")
             logger.info(f"  Native TTS: {config['tts']['native_voice']}")
         logger.info(f"  TTS Volume: {_volume_label(config)}")
+        if _rate_label(config):
+            logger.info(f"  TTS Speed:  {_rate_label(config)}")
         logger.info(f"  Loop:       {_loop_label(config)}")
         if folder_log:
             logger.info(f"  Folder log: {folder_log}")
@@ -1729,14 +1806,17 @@ def run_text_mode(config: dict) -> None:
         work_dir = Path(tempfile.mkdtemp(prefix="echo_loop_"))
 
         logger.info("[2/4] Generating target TTS audio...")
+        # tts.target_rate speeds up / slows down the target voice only; the
+        # native narration below keeps the base config so it stays followable.
+        target_config = _config_with_target_rate(config)
         target_audios = generate_target_audio(
             segments,
-            voice=config["tts"]["target_voice"],
-            rate=config["tts"]["rate"],
-            pitch=config["tts"]["pitch"],
+            voice=target_config["tts"]["target_voice"],
+            rate=target_config["tts"]["rate"],
+            pitch=target_config["tts"]["pitch"],
             work_dir=work_dir,
             **vol_kwargs,
-            **eng_kwargs,
+            **_tts_engine_kwargs(target_config),
         )
         logger.info(f"  Generated {len(target_audios)} target TTS clips")
 
@@ -1831,6 +1911,8 @@ def run_interview_mode(config: dict) -> None:
                     f"{timing.after_native}s / {timing.after_second_target}s")
         logger.info(f"  TTS Engine: {_engine_label(config)}")
         logger.info(f"  TTS Volume: {_volume_label(config)}")
+        if _rate_label(config):
+            logger.info(f"  TTS Speed:  {_rate_label(config)}")
         logger.info(f"  Loop:       {_loop_label(config)}")
         if folder_log:
             logger.info(f"  Folder log: {folder_log}")
