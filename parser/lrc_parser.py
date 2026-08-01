@@ -8,9 +8,22 @@ Example LRC line:
 Produces a list of Segment objects with start/end times and both language texts.
 """
 
+import logging
 import re
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Guard against a truncated LRC swallowing the tail of the audio. The last
+# segment normally runs to the end of the file, but if the subtitles stop early
+# that single segment would cover everything after them — and the Echo Loop
+# repeats it, turning minutes of untranslated audio into hours of output. Cap it
+# at a few times the typical segment length instead, and say so.
+_LAST_SEGMENT_MAX_FACTOR = 3
+_LAST_SEGMENT_MIN_CAP_MS = 30_000
+_LAST_SEGMENT_FALLBACK_MS = 5_000
 
 
 # Furigana annotation like 漢字（かんじ）/ 2024年（にせんにじゅうよねん）: full- or
@@ -128,6 +141,53 @@ def _strip_speaker_prefix(text: str) -> str:
     return text
 
 
+def _resolve_last_end_ms(
+    raw_entries: list[tuple[int, str, str]],
+    audio_duration_ms: int | None,
+    lrc_path: Path,
+) -> int:
+    """End time for the final segment, capped so a short LRC can't run away.
+
+    Normally the last subtitle runs to the end of the audio. When the subtitles
+    stop well before the audio does — a truncated transcription or translation —
+    that would make one segment tens of minutes long, and the Echo Loop repeats
+    every segment several times. Cap it and report the uncovered tail.
+    """
+    start_ms = raw_entries[-1][0]
+
+    if audio_duration_ms is None:
+        return start_ms + _LAST_SEGMENT_FALLBACK_MS
+
+    tail_ms = audio_duration_ms - start_ms
+    if len(raw_entries) < 2:
+        return audio_duration_ms
+
+    gaps = [
+        raw_entries[i + 1][0] - raw_entries[i][0]
+        for i in range(len(raw_entries) - 1)
+    ]
+    cap_ms = max(
+        _LAST_SEGMENT_MIN_CAP_MS,
+        int(statistics.median(gaps) * _LAST_SEGMENT_MAX_FACTOR),
+    )
+    if tail_ms <= cap_ms:
+        return audio_duration_ms
+
+    logger.warning(
+        "  ⚠ Subtitles end at %s but the audio runs to %s — %s of audio has no "
+        "subtitles. Capping the final segment at %s instead of letting it "
+        "absorb the tail. Check %s for a truncated transcription/translation.",
+        _fmt_ms(start_ms), _fmt_ms(audio_duration_ms), _fmt_ms(tail_ms),
+        _fmt_ms(cap_ms), lrc_path.name,
+    )
+    return start_ms + cap_ms
+
+
+def _fmt_ms(ms: int) -> str:
+    total_seconds = ms // 1000
+    return f"{total_seconds // 60:02d}:{total_seconds % 60:02d}"
+
+
 def parse_lrc(
     lrc_path: str | Path,
     delimiter: str = "-",
@@ -155,9 +215,10 @@ def parse_lrc(
         raise FileNotFoundError(f"LRC file not found: {lrc_path}")
 
     raw_entries: list[tuple[int, str, str]] = []  # (start_ms, target, native)
+    untranslated: list[int] = []  # line numbers of timestamped lines with no translation
 
     with open(lrc_path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_no, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
@@ -170,11 +231,24 @@ def parse_lrc(
             start_ms = _parse_timestamp(minutes, seconds, centis)
             target_text, native_text = _split_bilingual(text, delimiter, split_strategy)
 
-            # Skip lines with no native text (could be metadata lines)
+            # Timestamped but untranslated. Usually a truncated translation pass
+            # rather than metadata, so record it instead of dropping it quietly.
             if not native_text:
+                untranslated.append(line_no)
                 continue
 
             raw_entries.append((start_ms, target_text, native_text))
+
+    if untranslated:
+        preview = ", ".join(str(n) for n in untranslated[:5])
+        if len(untranslated) > 5:
+            preview += f", ... (+{len(untranslated) - 5} more)"
+        logger.warning(
+            "  ⚠ Skipped %d timestamped line(s) with no '%s' translation in %s "
+            "(line %s). These produce no audio — check whether the translation "
+            "pass was truncated.",
+            len(untranslated), delimiter, lrc_path.name, preview,
+        )
 
     if not raw_entries:
         raise ValueError(f"No valid bilingual entries found in {lrc_path}")
@@ -182,16 +256,15 @@ def parse_lrc(
     # Sort by start time
     raw_entries.sort(key=lambda x: x[0])
 
+    last_end_ms = _resolve_last_end_ms(raw_entries, audio_duration_ms, lrc_path)
+
     # Build segments with end times
     segments: list[Segment] = []
     for i, (start_ms, target, native) in enumerate(raw_entries):
         if i + 1 < len(raw_entries):
             end_ms = raw_entries[i + 1][0]
-        elif audio_duration_ms is not None:
-            end_ms = audio_duration_ms
         else:
-            # Fallback: estimate 5 seconds for last segment
-            end_ms = start_ms + 5000
+            end_ms = last_end_ms
 
         segments.append(Segment(
             index=i,
