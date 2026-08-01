@@ -29,9 +29,16 @@ jobs:
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
             git pull --ff-only
+            # The VPS's route to Docker Hub is intermittent — registry-1.docker.io
+            # times out on the TLS handshake often enough that a forced --pull
+            # makes every deploy a coin flip. Refresh the base image when the
+            # network cooperates and fall back to the cached copy when it does
+            # not, instead of failing a deploy that needs no new base image.
+            docker pull python:3.12-slim \
+              || echo "WARNING: could not reach Docker Hub; building on the cached base image"
             # Build before `up` so a failed build leaves the running container
             # untouched.
-            docker compose build --pull
+            docker compose build
             docker compose up -d --remove-orphans
             docker image rm ghcr.io/teichimon/echo_english:latest sudami/echo_english:latest 2>/dev/null || true
             docker image prune -f
