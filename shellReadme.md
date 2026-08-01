@@ -85,7 +85,7 @@ edge-tts 是微软免费的 TTS 服务，质量已经很好，支持多语言多
 
 ```bash
 # 1. echoEnglish 项目依赖
-cd /Volumes/SP/code/python/echoEnglish
+cd /Users/sudami/PycharmProjects/echoEnglish
 conda activate echo_env
 pip install -r requirements.txt
 
@@ -113,7 +113,7 @@ cat /Volumes/SP/code/subtitle-automation/.env
 # OpenAI API Key — 二选一：
 
 # 方式 A：写入 echoEnglish 项目的 .env（推荐，脚本会自动 source）
-echo 'OPENAI_API_KEY=sk-...' >> /Volumes/SP/code/python/echoEnglish/.env
+echo 'OPENAI_API_KEY=sk-...' >> /Users/sudami/PycharmProjects/echoEnglish/.env
 
 # 方式 B：export 到 shell 环境
 export OPENAI_API_KEY="sk-..."
