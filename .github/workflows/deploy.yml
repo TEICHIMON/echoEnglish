@@ -1,7 +1,13 @@
 name: Deploy
 
-# The VPS pulls the base image and builds the application locally. GitHub
-# Actions only connects over SSH to update and deploy the checked-out source.
+# Nothing here touches a registry from the VPS side. Its route to
+# registry-1.docker.io times out on the TLS handshake often enough that
+# depending on it makes every deploy a coin flip, while its GitHub route is
+# fine. So the runner — which reaches Docker Hub without trouble — pulls
+# python:3.12-slim and ships it over SCP, and that doubles as the base image's
+# update channel. The VPS loads the tarball and builds with the legacy builder,
+# because BuildKit resolves FROM metadata against Docker Hub even when the
+# image is already in the local store.
 on:
   push:
     branches: [main]
@@ -15,6 +21,22 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Export the base image on the runner
+        run: |
+          docker pull python:3.12-slim
+          docker save python:3.12-slim | gzip > python-3.12-slim.tar.gz
+          ls -lh python-3.12-slim.tar.gz
+
+      - name: Ship the base image to the VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          source: python-3.12-slim.tar.gz
+          target: ${{ secrets.DEPLOY_PATH }}
+
       - name: Build and deploy on VPS over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -29,16 +51,17 @@ jobs:
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
             git pull --ff-only
-            # The VPS's route to Docker Hub is intermittent — registry-1.docker.io
-            # times out on the TLS handshake often enough that a forced --pull
-            # makes every deploy a coin flip. Refresh the base image when the
-            # network cooperates and fall back to the cached copy when it does
-            # not, instead of failing a deploy that needs no new base image.
-            docker pull python:3.12-slim \
-              || echo "WARNING: could not reach Docker Hub; building on the cached base image"
+            docker load < python-3.12-slim.tar.gz
+            rm -f python-3.12-slim.tar.gz
+            # Legacy builder: trusts the just-loaded local base image instead of
+            # phoning Docker Hub for FROM metadata like BuildKit does.
+            export DOCKER_BUILDKIT=0
             # Build before `up` so a failed build leaves the running container
             # untouched.
             docker compose build
             docker compose up -d --remove-orphans
+            # Clean up: drop the registry-tagged images left over from the old
+            # pull-based deploys (no longer referenced by compose), then any
+            # dangling layers from superseded builds.
             docker image rm ghcr.io/teichimon/echo_english:latest sudami/echo_english:latest 2>/dev/null || true
             docker image prune -f
