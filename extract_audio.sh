@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PYTHON="/opt/homebrew/anaconda3/envs/echo_env/bin/python"
-SCRIPT="/Volumes/SP/code/python/echoEnglish/extract_audio.py"
+SCRIPT="/Users/sudami/PycharmProjects/echoEnglish/extract_audio.py"
 
 if [[ $# -eq 0 ]]; then
     echo "用法: extract_audio <视频文件夹> [选项]"
