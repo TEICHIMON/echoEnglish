@@ -119,11 +119,47 @@ ECHO_PYTHON="/opt/homebrew/anaconda3/envs/echo_env/bin/python"
 ```
 
 以后任何一个项目搬家，只改这一个文件。脚本启动时会校验这三个路径是否存在，
-失效就立刻报错退出。
+失效就立刻报错退出。三个都是 `${VAR:-默认值}` 形式，可以用环境变量临时指向别的 checkout。
 
 > 这么做的原因：这组路径原本被复制粘贴进了 4 个脚本，2026-08 把 echoEnglish 从
 > `/Volumes/SP` 迁到 `~/PycharmProjects` 时只改了其中 1 个，另外 3 个指向的
 > `/Volumes/SP/code/python/echoEnglish` 被删除后静默失效了很久才被发现。
+
+### 生成参数（`echo_pipeline` 用）
+
+同一个 `paths.env` 里还有 `echo_pipeline` 的生成参数，默认值就是它原本写死的那套：
+
+```bash
+ECHO_ENGINE="google"
+ECHO_NATIVE_VOICE="cmn-CN-Chirp3-HD-Kore"
+ECHO_TARGET_VOICE_EN="en-US-Neural2-F"     # 按文件夹名里的 English/Japanese 选
+ECHO_TARGET_VOICE_JA="ja-JP-Neural2-B"
+ECHO_VARIANT="progressive"
+ECHO_TNT_REPEATS=2
+ECHO_TST_REPEATS=1
+ECHO_GAIN=-6
+ECHO_SPLIT_OUTPUTS=false
+```
+
+**这些刻意不从 `config.yaml` 读**：那份配置由 web UI 共用，默认值不同（单个 T-S-T、
+0 dB、rclone 同步到 Google Drive）。跟着它走的话，为 web UI 调一次参数就会悄悄改掉
+这条流水线的产出。
+
+临时覆盖两种方式：
+
+```bash
+echo_pipeline --split                    # 一次出 _tnt + _tst，TTS 只生成一次不额外花钱
+echo_pipeline --variant shadow           # 纯 T-S-T
+echo_pipeline --variant shadow --tst 3   # 覆盖 preset 的重复次数
+ECHO_GAIN=0 echo_pipeline                # 任何一项都能用环境变量覆盖
+```
+
+`echo_pipeline --help` 列出全部选项。
+
+> `--variant` 会清空已配置的重复次数，让变体的 preset 生效；想再覆盖就在它后面跟
+> `--tnt` / `--tst`。这一步是必要的：`main.py` 在应用变体 preset **之后**才处理显式
+> 的重复次数，所以只要一直传 `--tnt-repeats`，`--variant` 就完全不起作用 ——
+> `--variant shadow` 曾经照样产出 2×T-N-T。
 
 ### 仅扩展版额外需要
 
