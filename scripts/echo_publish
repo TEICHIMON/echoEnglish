@@ -1,0 +1,207 @@
+#!/bin/bash
+# =============================================================================
+# echo_publish: KB audio/ tree  →  iCloud MP3 dir  →  echoEnglish
+#
+# Reconciles the interview-notes `audio/en` + `audio/ja` script.txt runs against
+# the iCloud cubeTC MP3 folder and voices only what's MISSING:
+#
+#   1. Enumerate every KB run folder that has a script.txt (en + ja trees).
+#   2. Compare CONTENTS (script.txt hash) against what's already in iCloud.
+#        DONE       -> content match + already has _tnt/_tst .m4a  -> skip
+#        VOICE-ONLY -> content match but not voiced yet            -> run echoEnglish
+#        NEW        -> no content match in iCloud                  -> copy + run echoEnglish
+#   3. Voice each NEW / VOICE-ONLY folder with the per-language Google voice.
+#
+# Language (and thus target voice) comes from the TREE (audio/en vs audio/ja),
+# not the folder-name suffix (which is inconsistent across runs).
+#
+# Usage:
+#   echo_publish                 # reconcile all missing runs, both languages
+#   echo_publish --dry-run       # classify + print the plan; copy/voice nothing
+#   echo_publish --latest        # only the newest run in each tree
+#   echo_publish --lang en|ja    # limit to one language
+#   echo_publish <stem|folder>.. # limit to specific runs (stem substring or a path)
+#   KB_AUDIO_DIR=/path echo_publish   # override KB audio dir
+# =============================================================================
+set -uo pipefail   # no -e: a single echoEnglish failure must not abort the batch
+
+# ── Config ──────────────────────────────────────────────────────────────────
+KB_AUDIO_DIR="${KB_AUDIO_DIR:-/Users/sudami/WebstormProjects/resume20260521/interview-notes/audio}"
+ICLOUD_DIR="/Users/sudami/Library/Mobile Documents/iCloud~com~cubeTC~MP3/Documents/mp3music/audio"
+ECHO_ENGLISH="$HOME/bin/echo_interactive"   # the `echoEnglish` entrypoint (conda + main.py)
+
+NATIVE_VOICE="cmn-CN-Chirp3-HD-Kore"
+EN_VOICE="en-US-Chirp3-HD-Charon"
+JA_VOICE="ja-JP-Chirp3-HD-Charon"
+
+# ── Args ────────────────────────────────────────────────────────────────────
+DRY_RUN=0
+LATEST=0
+LANG_FILTER=""        # "", "en", or "ja"
+FILTERS=()            # positional stem/folder filters
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run|-n) DRY_RUN=1; shift ;;
+        --latest)     LATEST=1; shift ;;
+        --lang)       LANG_FILTER="${2:-}"; shift 2 ;;
+        --lang=*)     LANG_FILTER="${1#*=}"; shift ;;
+        -h|--help)
+            sed -n '2,30p' "$0"; exit 0 ;;
+        *) FILTERS+=("$1"); shift ;;
+    esac
+done
+
+if [[ -n "$LANG_FILTER" && "$LANG_FILTER" != "en" && "$LANG_FILTER" != "ja" ]]; then
+    echo "❌ --lang must be 'en' or 'ja' (got '$LANG_FILTER')"; exit 1
+fi
+if [[ ! -d "$KB_AUDIO_DIR" ]]; then
+    echo "❌ KB audio dir not found: $KB_AUDIO_DIR"; exit 1
+fi
+if [[ ! -d "$ICLOUD_DIR" ]]; then
+    echo "❌ iCloud target not found: $ICLOUD_DIR"; exit 1
+fi
+
+log() { echo "[$(date '+%Y/%m/%d %H:%M:%S')] $*"; }
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+hash_file() { shasum "$1" 2>/dev/null | cut -d' ' -f1; }
+
+# Apply the positional stem/folder filters to a KB run folder path.
+matches_filters() {
+    local kb_dir="$1" base; base=$(basename "$kb_dir")
+    [[ ${#FILTERS[@]} -eq 0 ]] && return 0
+    local f
+    for f in "${FILTERS[@]}"; do
+        # match by basename substring OR by (normalized) path equality
+        if [[ "$base" == *"$f"* ]] || [[ "$kb_dir" == *"$f"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Canonical, collision-free iCloud folder name for a NEW run.
+# Strip a trailing lang token, then append _English / _Japanese from the tree.
+icloud_name_for() {
+    local base="$1" lang="$2"
+    local stem
+    stem=$(echo "$base" | sed -E 's/_(en|ja|zh|english|japanese|chinese)$//I')
+    if [[ "$lang" == "en" ]]; then echo "${stem}_English"; else echo "${stem}_Japanese"; fi
+}
+
+# Find an iCloud folder whose script.txt content-matches $1. Echoes the path or "".
+find_icloud_match() {
+    local want; want=$(hash_file "$1")
+    [[ -z "$want" ]] && return 0
+    local f d
+    for f in "$ICLOUD_DIR"/*/script.txt; do
+        [[ -e "$f" ]] || continue
+        d=$(dirname "$f")
+        case "$(basename "$d")" in .*) continue ;; esac   # skip dot-dirs
+        if [[ "$(hash_file "$f")" == "$want" ]]; then echo "$d"; return 0; fi
+    done
+    echo ""
+}
+
+is_voiced() {  # a folder is "voiced" once both split outputs exist
+    [[ -f "$1/script_tnt.m4a" && -f "$1/script_tst.m4a" ]]
+}
+
+# Run echoEnglish on a single iCloud folder. Returns python's exit code.
+voice_folder() {
+    local folder="$1" lang="$2" voice
+    [[ "$lang" == "en" ]] && voice="$EN_VOICE" || voice="$JA_VOICE"
+    log "🎤 echoEnglish --scan '$(basename "$folder")'  (target=$voice, native=$NATIVE_VOICE)"
+    "$ECHO_ENGLISH" --scan "$folder" --mode text --engine google \
+        --google-target-voice "$voice" --google-voice "$NATIVE_VOICE"
+}
+
+# ── Collect KB run folders (en + ja) ────────────────────────────────────────
+declare -a TREES=()
+[[ -z "$LANG_FILTER" || "$LANG_FILTER" == "en" ]] && TREES+=("en")
+[[ -z "$LANG_FILTER" || "$LANG_FILTER" == "ja" ]] && TREES+=("ja")
+
+declare -a RUN_DIRS=() RUN_LANGS=()
+for lang in "${TREES[@]}"; do
+    # newest-first so --latest can take the first per tree
+    while IFS= read -r script; do
+        [[ -n "$script" ]] || continue
+        d=$(dirname "$script")
+        matches_filters "$d" || continue
+        RUN_DIRS+=("$d"); RUN_LANGS+=("$lang")
+        [[ "$LATEST" -eq 1 ]] && break   # only newest in this tree
+    done < <(find "$KB_AUDIO_DIR/$lang" -type f -name script.txt \
+                -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | cut -d' ' -f2-)
+done
+
+if [[ ${#RUN_DIRS[@]} -eq 0 ]]; then
+    log "ℹ️  No matching KB run folders with script.txt. Nothing to do."
+    exit 0
+fi
+
+# ── Classify ────────────────────────────────────────────────────────────────
+declare -a TODO_DIRS=() TODO_LANGS=() TODO_DEST=() TODO_KIND=()
+n_done=0
+log "🔎 Comparing ${#RUN_DIRS[@]} KB run(s) against iCloud …"
+echo ""
+for i in "${!RUN_DIRS[@]}"; do
+    kb="${RUN_DIRS[$i]}"; lang="${RUN_LANGS[$i]}"; base=$(basename "$kb")
+    match=$(find_icloud_match "$kb/script.txt")
+    if [[ -n "$match" ]]; then
+        if is_voiced "$match"; then
+            printf "  DONE        [%s] %s\n" "$lang" "$base"
+            n_done=$((n_done+1))
+        else
+            printf "  VOICE-ONLY  [%s] %s  →  %s\n" "$lang" "$base" "$(basename "$match")"
+            TODO_DIRS+=("$kb"); TODO_LANGS+=("$lang"); TODO_DEST+=("$match"); TODO_KIND+=("voice")
+        fi
+    else
+        dest="$ICLOUD_DIR/$(icloud_name_for "$base" "$lang")"
+        printf "  NEW         [%s] %s  →  %s\n" "$lang" "$base" "$(basename "$dest")"
+        TODO_DIRS+=("$kb"); TODO_LANGS+=("$lang"); TODO_DEST+=("$dest"); TODO_KIND+=("new")
+    fi
+done
+echo ""
+log "📊 ${#TODO_DIRS[@]} to process · $n_done already done"
+
+if [[ ${#TODO_DIRS[@]} -eq 0 ]]; then
+    log "🏁 Nothing missing — iCloud is up to date."
+    exit 0
+fi
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "🟡 --dry-run: no files copied, no audio generated."
+    exit 0
+fi
+
+# ── Execute ─────────────────────────────────────────────────────────────────
+succeeded=(); failed=()
+for i in "${!TODO_DIRS[@]}"; do
+    kb="${TODO_DIRS[$i]}"; lang="${TODO_LANGS[$i]}"; dest="${TODO_DEST[$i]}"; kind="${TODO_KIND[$i]}"
+    echo ""
+    log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if [[ "$kind" == "new" ]]; then
+        log "📂 NEW: $(basename "$dest")"
+        mkdir -p "$dest" || { failed+=("$(basename "$dest")"); continue; }
+        cp "$kb/script.txt" "$dest/script.txt" || { failed+=("$(basename "$dest")"); continue; }
+    else
+        log "📂 VOICE-ONLY: $(basename "$dest")"
+    fi
+    if voice_folder "$dest" "$lang"; then
+        log "✅ Done: $(basename "$dest")"
+        succeeded+=("$(basename "$dest")")
+    else
+        rc=$?
+        log "❌ Failed: $(basename "$dest") (exit $rc, continuing)"
+        failed+=("$(basename "$dest")")
+    fi
+done
+
+echo ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "🏁 Finished!  ✓ ${#succeeded[@]} / ${#TODO_DIRS[@]}"
+if [[ ${#failed[@]} -gt 0 ]]; then
+    log "  ✗ Failed: ${#failed[@]}"
+    for name in "${failed[@]}"; do log "    - $name"; done
+    exit 1
+fi

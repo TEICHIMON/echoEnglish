@@ -1,0 +1,227 @@
+#!/bin/bash
+# =============================================================================
+# Echo Pipeline: subtitle-automation → echoEnglish
+#
+# 1. Run subtitle-automation (npm run dev) → syncs audio+LRC to SYNC_DIR
+# 2. Detect which timestamp folders were just created
+# 3. Run echoEnglish (--scan) on ONLY those new folders
+#
+# All shell-side output is also tee'd to a master log under
+#   $ECHO_DIR/logs/<timestamp>_pipeline_shell.log
+# (Python writes its own central log to $ECHO_DIR/logs/<timestamp>_pipeline.log
+# with structured timestamps; the two are complementary.)
+#
+# Individual folder failures no longer abort the whole pipeline — each
+# folder's exit code is captured and the loop continues.
+#
+# Usage:
+#   echo_pipeline              # full pipeline
+#   echo_pipeline --echo DIR   # skip subtitle, run echoEnglish on a specific folder
+# =============================================================================
+set -uo pipefail
+# NOTE: we intentionally drop -e so a single Python failure inside
+#       run_echo_on_folder doesn't kill the whole pipeline. Errors are
+#       handled explicitly with `if ... ; then ... else ... fi`.
+
+# 路径唯一真源，搬家时只改那一个文件。
+source "$HOME/.config/echo/paths.env"
+echo_paths_require SUBTITLE_DIR ECHO_DIR ECHO_PYTHON
+
+# Read SYNC_DIR from subtitle-automation's .env
+SYNC_DIR=""
+if [[ -f "$SUBTITLE_DIR/.env" ]]; then
+    SYNC_DIR=$(grep -E '^SYNC_DIR=' "$SUBTITLE_DIR/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+fi
+if [[ -z "$SYNC_DIR" ]]; then
+    echo "❌ SYNC_DIR not found in $SUBTITLE_DIR/.env"
+    exit 1
+fi
+
+# --- Master shell log: tee everything from this point on ---
+mkdir -p "$ECHO_DIR/logs"
+PIPELINE_LOG="$ECHO_DIR/logs/$(date +%Y%m%d_%H%M%S)_pipeline_shell.log"
+exec > >(tee -a "$PIPELINE_LOG") 2>&1
+
+log() {
+    echo "[$(date '+%Y/%m/%d %H:%M:%S')] $*"
+}
+
+log "📝 Shell pipeline log: $PIPELINE_LOG"
+
+# Determine Google TTS target voice from folder name
+get_target_voice() {
+    local name="$1"
+    if echo "$name" | grep -qi "English"; then
+        echo "$ECHO_TARGET_VOICE_EN"
+    elif echo "$name" | grep -qi "Japanese"; then
+        echo "$ECHO_TARGET_VOICE_JA"
+    else
+        echo "$ECHO_TARGET_VOICE_EN"
+    fi
+}
+
+# Run echoEnglish --scan on a single folder.
+# Returns the exit code from python so callers can decide what to do.
+run_echo_on_folder() {
+    local folder="$1"
+    local folder_name
+    folder_name=$(basename "$folder")
+    local target_voice
+    target_voice=$(get_target_voice "$folder_name")
+
+    # Generation settings come from ~/.config/echo/paths.env, NOT from
+    # echoEnglish's config.yaml: that file is shared with the web UI, whose
+    # defaults differ (single T-S-T, 0 dB, rclone sync to Google Drive), so
+    # inheriting it would let a web-UI tweak silently change this pipeline's
+    # output. --no-sync keeps the output where subtitle-automation put it, with
+    # no second upload.
+    local -a args=(
+        main.py --scan "$folder"
+        --engine "$ECHO_ENGINE"
+        --google-target-voice "$target_voice"
+        --google-voice "$ECHO_NATIVE_VOICE"
+        --mode audio
+        --variant "$ECHO_VARIANT"
+        --gain "$ECHO_GAIN"
+        --no-sync
+    )
+    # Repeats are only passed when set. main.py applies them AFTER the variant
+    # preset, so always sending them would pin the pattern and make --variant a
+    # no-op — `--variant shadow` was still producing 2×T-N-T.
+    [[ -n "$ECHO_TNT_REPEATS" ]] && args+=(--tnt-repeats "$ECHO_TNT_REPEATS")
+    [[ -n "$ECHO_TST_REPEATS" ]] && args+=(--tst-repeats "$ECHO_TST_REPEATS")
+    if [[ "$ECHO_SPLIT_OUTPUTS" == "true" ]]; then
+        args+=(--split-outputs)
+    else
+        args+=(--no-split-outputs)
+    fi
+
+    log "📂 Processing: $folder_name"
+    log "🎤 Engine: $ECHO_ENGINE | Target: $target_voice | Native: $ECHO_NATIVE_VOICE"
+    local repeats="preset"
+    [[ -n "$ECHO_TNT_REPEATS$ECHO_TST_REPEATS" ]] &&
+        repeats="${ECHO_TNT_REPEATS:-preset}×T-N-T + ${ECHO_TST_REPEATS:-preset}×T-S-T"
+    log "🔁 Loop: $ECHO_VARIANT ($repeats) | Gain: ${ECHO_GAIN}dB | Split: $ECHO_SPLIT_OUTPUTS"
+    cd "$ECHO_DIR" || return 1
+    "$ECHO_PYTHON" "${args[@]}"
+}
+
+# ── Main ──
+# Flags override ~/.config/echo/paths.env for this run only.
+ECHO_TARGET_DIR=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --echo)
+            ECHO_TARGET_DIR="${2:-}"
+            if [[ -z "$ECHO_TARGET_DIR" ]]; then
+                echo "Usage: echo_pipeline [--split|--no-split] [--variant NAME] [--echo DIR]"
+                exit 1
+            fi
+            shift 2
+            ;;
+        --split)     ECHO_SPLIT_OUTPUTS="true";  shift ;;
+        --no-split)  ECHO_SPLIT_OUTPUTS="false"; shift ;;
+        # Picking a variant clears the configured repeats so the preset applies;
+        # pass --tnt/--tst after it to override the preset again.
+        --variant)   ECHO_VARIANT="${2:-}"; ECHO_TNT_REPEATS=""; ECHO_TST_REPEATS=""; shift 2 ;;
+        --tnt)       ECHO_TNT_REPEATS="${2:-}"; shift 2 ;;
+        --tst)       ECHO_TST_REPEATS="${2:-}"; shift 2 ;;
+        -h|--help)
+            cat <<'USAGE'
+Usage: echo_pipeline [OPTIONS]
+
+  (no options)        subtitle-automation → 检测新文件夹 → echoEnglish
+  --echo DIR          跳过字幕步骤,只对 DIR 跑 echoEnglish
+  --split             一次出 _tnt 和 _tst 两个文件 (TTS 只生成一次,不额外花钱)
+  --no-split          单个合并文件
+  --variant NAME      full | shadow | progressive
+
+生成参数的默认值在 ~/.config/echo/paths.env,也可以用环境变量临时覆盖:
+  ECHO_GAIN=0 ECHO_TST_REPEATS=2 echo_pipeline
+USAGE
+            exit 0
+            ;;
+        *)
+            echo "未知参数: $1（用 --help 看用法）" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [[ -n "$ECHO_TARGET_DIR" ]]; then
+    log "🔊 Running echoEnglish on: $ECHO_TARGET_DIR"
+    if run_echo_on_folder "$ECHO_TARGET_DIR"; then
+        log "🏁 Done!"
+        exit 0
+    else
+        rc=$?
+        log "❌ Failed: $ECHO_TARGET_DIR (exit code: $rc)"
+        exit $rc
+    fi
+fi
+
+log "🚀 Echo Pipeline started"
+log "📂 SYNC_DIR: $SYNC_DIR"
+
+# Snapshot: list folders BEFORE running subtitle-automation
+before_folders=$(find "$SYNC_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+log ""
+log "🎬 Step 1: Running subtitle-automation..."
+cd "$SUBTITLE_DIR" || { log "❌ Cannot cd to $SUBTITLE_DIR"; exit 1; }
+if ! npm run dev; then
+    log "❌ subtitle-automation failed"
+    exit 1
+fi
+log "✅ subtitle-automation completed."
+
+# Step 2: find NEW folders (created during step 1)
+after_folders=$(find "$SYNC_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+new_folders=()
+while IFS= read -r folder; do
+    [[ -n "$folder" ]] && new_folders+=("$folder")
+done < <(comm -13 <(echo "$before_folders") <(echo "$after_folders"))
+
+if [[ ${#new_folders[@]} -eq 0 ]]; then
+    log ""
+    log "ℹ️  No new sync folders created. Nothing new to process."
+    log "🏁 Pipeline finished!"
+    exit 0
+fi
+
+log ""
+log "🔊 Step 2: Running echoEnglish on ${#new_folders[@]} new folder(s)..."
+log "   Folders to process:"
+for folder in "${new_folders[@]}"; do
+    log "     - $(basename "$folder")"
+done
+
+# Track success/failure for the final summary
+succeeded=()
+failed=()
+
+for folder in "${new_folders[@]}"; do
+    log ""
+    log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if run_echo_on_folder "$folder"; then
+        log "✅ Done: $(basename "$folder")"
+        succeeded+=("$(basename "$folder")")
+    else
+        rc=$?
+        log "❌ Failed: $(basename "$folder") (exit code: $rc, continuing with next)"
+        failed+=("$(basename "$folder")")
+    fi
+done
+
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "🏁 Pipeline finished!"
+log "  ✓ Succeeded: ${#succeeded[@]} / ${#new_folders[@]}"
+if [[ ${#failed[@]} -gt 0 ]]; then
+    log "  ✗ Failed:    ${#failed[@]}"
+    for name in "${failed[@]}"; do
+        log "    - $name"
+    done
+    exit 1
+fi
