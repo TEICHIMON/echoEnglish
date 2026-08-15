@@ -165,8 +165,8 @@ interview:
   # engine default). Raising only the interviewer makes the QUESTIONS harder to
   # catch — closer to how a real interviewer sounds — while the answers stay at
   # a speed you can actually shadow. ~1.15–1.25 is a realistic interviewer.
-  interviewer_rate:
-  interviewee_rate:
+  interviewer_rate: 1.2
+  interviewee_rate: 1.0
   google:
     interviewer_voice: "en-US-Chirp3-HD-Charon"
     interviewee_voice: "en-US-Chirp3-HD-Kore"

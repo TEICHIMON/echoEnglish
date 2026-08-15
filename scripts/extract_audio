@@ -11,17 +11,22 @@
 # =============================================================================
 set -euo pipefail
 
-PYTHON="/opt/homebrew/anaconda3/envs/echo_env/bin/python"
-SCRIPT="/Users/sudami/PycharmProjects/echoEnglish/extract_audio.py"
+# 路径唯一真源，搬家时只改那一个文件。
+source "$HOME/.config/echo/paths.env"
+echo_paths_require ECHO_DIR ECHO_PYTHON
+
+PYTHON="$ECHO_PYTHON"
+SCRIPT="$ECHO_DIR/extract_audio.py"
 
 if [[ $# -eq 0 ]]; then
     echo "用法: extract_audio <视频文件夹> [选项]"
     echo ""
     echo "选项:"
-    echo "  --bitrate, -b       音频比特率 (默认: 192k)"
-    echo "  --sample-rate, -r   采样率 Hz (默认: 44100)"
-    echo "  --max-duration, -d  单段最大秒数，超过则切分加数字后缀 (默认: 1200, 0=关闭)"
-    echo "  --overwrite         覆盖已存在的 .m4a 文件"
+    echo "  --bitrate, -b          音频比特率 (默认: 192k)"
+    echo "  --sample-rate, -r      采样率 Hz (默认: 44100)"
+    echo "  --split-threshold, -t  超过这个时长(秒)就切分，传 0 关闭 (默认: 600)"
+    echo "  --chunk-duration, -c   切分后每段的时长(秒) (默认: 600)"
+    echo "  --overwrite            覆盖已存在的文件 (默认跳过)"
     exit 1
 fi
 

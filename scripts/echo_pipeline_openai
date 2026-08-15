@@ -1,0 +1,196 @@
+#!/bin/bash
+# =============================================================================
+# Echo Pipeline (OpenAI): subtitle-automation → echoEnglish
+#
+# Same as echo_pipeline, but supports OpenAI TTS for math/formula content.
+# Without --openai, behaves identically to the original (edge-tts).
+#
+# Usage:
+#   echo_pipeline_openai                              # edge-tts (same as original)
+#   echo_pipeline_openai --openai                     # OpenAI TTS
+#   echo_pipeline_openai --openai --openai-voice sage # custom OpenAI voice
+#   echo_pipeline_openai --echo DIR                   # edge-tts on specific folder
+#   echo_pipeline_openai --echo DIR --openai          # OpenAI on specific folder
+# =============================================================================
+set -euo pipefail
+
+# 路径唯一真源，搬家时只改那一个文件。
+source "$HOME/.config/echo/paths.env"
+echo_paths_require SUBTITLE_DIR ECHO_DIR ECHO_PYTHON
+
+PYTHON="$ECHO_PYTHON"
+
+# Read SYNC_DIR from subtitle-automation's .env
+SYNC_DIR=""
+if [[ -f "$SUBTITLE_DIR/.env" ]]; then
+    SYNC_DIR=$(grep -E '^SYNC_DIR=' "$SUBTITLE_DIR/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+fi
+
+if [[ -z "$SYNC_DIR" ]]; then
+    echo "❌ SYNC_DIR not found in $SUBTITLE_DIR/.env"
+    exit 1
+fi
+
+# Parse flags
+USE_OPENAI=false
+OPENAI_VOICE=""
+ECHO_DIR_ARG=""
+
+args=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --openai)
+            USE_OPENAI=true
+            shift
+            ;;
+        --openai-voice)
+            OPENAI_VOICE="$2"
+            shift 2
+            ;;
+        --echo)
+            ECHO_DIR_ARG="$2"
+            shift 2
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Load OPENAI_API_KEY if using OpenAI engine
+if $USE_OPENAI; then
+    if [[ -f "$ECHO_DIR/.env" ]]; then
+        # Export vars from .env without overwriting existing ones
+        set -a
+        source "$ECHO_DIR/.env"
+        set +a
+    fi
+    if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+        echo "❌ OPENAI_API_KEY not set. Add it to $ECHO_DIR/.env or export it."
+        exit 1
+    fi
+fi
+
+log() {
+    echo "[$(date '+%Y/%m/%d %H:%M:%S')] $*"
+}
+
+# Determine Google TTS target voice from folder name (default engine)
+get_target_voice() {
+    local name="$1"
+    if echo "$name" | grep -qi "English"; then
+        echo "en-US-Neural2-F"
+    elif echo "$name" | grep -qi "Japanese"; then
+        echo "ja-JP-Neural2-B"
+    else
+        echo "en-US-Neural2-F"
+    fi
+}
+
+NATIVE_VOICE="cmn-CN-Chirp3-HD-Kore"
+
+# Determine OpenAI instructions from folder name
+get_openai_instructions() {
+    local name="$1"
+    if echo "$name" | grep -qi "Japanese"; then
+        echo "用中文自然地朗读，日语术语保持原文发音，数学表达式要读成口语形式"
+    else
+        echo "用中文自然地朗读，数学表达式要读成口语形式，比如2ⁿ读作2的n次方"
+    fi
+}
+
+# Run echoEnglish --scan on a single folder
+run_echo_on_folder() {
+    local folder="$1"
+    local folder_name
+    folder_name=$(basename "$folder")
+
+    cd "$ECHO_DIR"
+
+    if $USE_OPENAI; then
+        local instructions
+        instructions=$(get_openai_instructions "$folder_name")
+        local voice="${OPENAI_VOICE:-coral}"
+
+        log "📂 Processing: $folder_name"
+        log "🤖 Engine: OpenAI (voice=$voice)"
+
+        local cmd=("$PYTHON" main.py --scan "$folder"
+            --engine openai
+            --openai-voice "$voice"
+            --openai-instructions "$instructions"
+            --mode audio)
+
+        # target-voice is still needed for text-only mode target audio via edge-tts,
+        # but in --mode audio it's extracted from the source file, so it's harmless
+        local target_voice
+        target_voice=$(get_target_voice "$folder_name")
+        cmd+=(--target-voice "$target_voice")
+
+        "${cmd[@]}"
+    else
+        local target_voice
+        target_voice=$(get_target_voice "$folder_name")
+
+        log "📂 Processing: $folder_name"
+        log "🎤 Engine: google | Target: $target_voice | Native: $NATIVE_VOICE"
+
+        "$PYTHON" main.py --scan "$folder" \
+            --engine google \
+            --google-target-voice "$target_voice" \
+            --google-voice "$NATIVE_VOICE" \
+            --mode audio
+    fi
+}
+
+# ── Main ──
+if [[ -n "$ECHO_DIR_ARG" ]]; then
+    log "🔊 Running echoEnglish on: $ECHO_DIR_ARG"
+    run_echo_on_folder "$ECHO_DIR_ARG"
+    log "🏁 Done!"
+    exit 0
+fi
+
+log "🚀 Echo Pipeline started"
+log "📂 SYNC_DIR: $SYNC_DIR"
+$USE_OPENAI && log "🤖 Engine: OpenAI" || log "🎤 Engine: google"
+
+# Snapshot: list folders BEFORE running subtitle-automation
+before_folders=$(find "$SYNC_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+# Step 1: subtitle-automation
+log ""
+log "🎬 Step 1: Running subtitle-automation..."
+cd "$SUBTITLE_DIR"
+npm run dev
+
+log "✅ subtitle-automation completed."
+
+# Step 2: find NEW folders (created during step 1)
+after_folders=$(find "$SYNC_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+new_folders=()
+while IFS= read -r folder; do
+    [[ -n "$folder" ]] && new_folders+=("$folder")
+done < <(comm -13 <(echo "$before_folders") <(echo "$after_folders"))
+
+if [[ ${#new_folders[@]} -eq 0 ]]; then
+    log ""
+    log "ℹ️  No new sync folders created. Nothing new to process."
+    log "🏁 Pipeline finished!"
+    exit 0
+fi
+
+log ""
+log "🔊 Step 2: Running echoEnglish on ${#new_folders[@]} new folder(s)..."
+
+for folder in "${new_folders[@]}"; do
+    log ""
+    log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    run_echo_on_folder "$folder"
+    log "✅ Done: $(basename "$folder")"
+done
+
+log ""
+log "🏁 Pipeline finished!"
