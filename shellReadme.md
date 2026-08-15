@@ -90,7 +90,7 @@ conda activate echo_env
 pip install -r requirements.txt
 
 # 2. subtitle-automation 项目依赖
-cd /Volumes/SP/code/subtitle-automation
+cd ~/WebstormProjects/subtitle-automation
 npm install
 
 # 3. ffmpeg（m4a 导出需要）
@@ -103,9 +103,27 @@ chmod +x ~/bin/echo_pipeline ~/bin/echo_pipeline_openai
 
 # 5. subtitle-automation 的 .env 中必须定义 SYNC_DIR
 #    脚本启动时会从这里读取同步目录路径
-cat /Volumes/SP/code/subtitle-automation/.env
+cat ~/WebstormProjects/subtitle-automation/.env
 # SYNC_DIR=/path/to/your/sync/folder
 ```
+
+### 路径配置（唯一真源）
+
+四个脚本（`echo_pipeline`、`echo_pipeline_openai`、`echo_pipeline_translate`、
+`extract_audio`）的路径**不再各自硬编码**，而是统一从 `~/.config/echo/paths.env` 读取：
+
+```bash
+SUBTITLE_DIR="$HOME/WebstormProjects/subtitle-automation"
+ECHO_DIR="$HOME/PycharmProjects/echoEnglish"
+ECHO_PYTHON="/opt/homebrew/anaconda3/envs/echo_env/bin/python"
+```
+
+以后任何一个项目搬家，只改这一个文件。脚本启动时会校验这三个路径是否存在，
+失效就立刻报错退出。
+
+> 这么做的原因：这组路径原本被复制粘贴进了 4 个脚本，2026-08 把 echoEnglish 从
+> `/Volumes/SP` 迁到 `~/PycharmProjects` 时只改了其中 1 个，另外 3 个指向的
+> `/Volumes/SP/code/python/echoEnglish` 被删除后静默失效了很久才被发现。
 
 ### 仅扩展版额外需要
 
