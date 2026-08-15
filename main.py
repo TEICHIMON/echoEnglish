@@ -7,6 +7,7 @@ audio files for language learning, based on "Echo: Rebuilding the Natural Reflex
 of Language" by H. Reeve.
 
 Three modes:
+  One path:    python main.py /path/to/folder-or-file  (then pick settings)
   Interactive: python main.py -i
   Audio mode:  python main.py lesson01.mp3 lesson01.lrc
   Text mode:   python main.py --text phrases.txt
@@ -31,14 +32,20 @@ from dotenv import load_dotenv
 
 from parser.lrc_parser import parse_lrc
 from parser.text_parser import parse_text
-from parser.interview_parser import parse_interview_text
+from parser.interview_parser import parse_interview_text, ROLE_PATTERN
 from audio.splitter import load_audio, extract_all_segments
 from audio.tts_generator import generate_native_audio, generate_target_audio
 from audio.assembler import assemble_all_loops, EchoTiming, resolve_loop_pattern
 from export.exporter import export_audio
 from export.lrc_writer import generate_echo_lrc
 from export.sync import sync_outputs
-from scanner.scanner import scan_folder, print_scan_summary, ScanItem
+from scanner.scanner import (
+    scan_folder,
+    print_scan_summary,
+    ScanItem,
+    AUDIO_EXTENSIONS,
+    OUTPUT_SUFFIXES,
+)
 
 from echo_logging import (
     setup_logging,
@@ -345,6 +352,140 @@ def _apply_sync_env_overrides(sync: dict) -> None:
         sync["include_lrc"] = _env_truthy(include_lrc)
 
 
+class InputPathError(Exception):
+    """A path handed to the CLI could not be turned into a runnable input."""
+
+
+def _sibling_lrc(audio_path: Path) -> Path | None:
+    """Find the LRC that belongs to a recording, matching the scanner's rule."""
+    candidate = audio_path.with_suffix(".lrc")
+    return candidate if candidate.is_file() else None
+
+
+def _sibling_audio(lrc_path: Path) -> Path | None:
+    """Find the recording that belongs to an LRC, matching the scanner's rule."""
+    for ext in sorted(AUDIO_EXTENSIONS):
+        candidate = lrc_path.with_suffix(f".{ext}")
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _looks_like_interview(text_path: Path) -> bool:
+    """True when a text file's lines carry Q:/A: role markers."""
+    try:
+        lines = text_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return bool(ROLE_PATTERN.match(stripped))
+    return False
+
+
+def resolve_input_path(raw: str) -> dict[str, str]:
+    """Turn one pasted path into the config input paths it implies.
+
+    Accepts whatever is convenient to drop at a shell:
+
+      folder      -> batch scan (filtered to audio when it holds no text files)
+      audio file  -> audio mode; the sibling ``<stem>.lrc`` is found for you
+      .lrc file   -> audio mode; the sibling recording is found for you
+      .txt file   -> interview mode when the lines carry Q:/A: role markers,
+                     otherwise plain bilingual text mode
+
+    Raises ``InputPathError`` with a message naming what was missing, so a typo
+    or an unpaired recording fails before any TTS is billed.
+    """
+    path = Path(raw).expanduser()
+    if not path.exists():
+        raise InputPathError(f"path does not exist: {path}")
+
+    if path.is_dir():
+        items = _probe_scan(path)
+        if not items:
+            raise InputPathError(
+                f"nothing to process in {path} — expected audio files with a "
+                f"matching .lrc, or .txt files"
+            )
+        result = {"scan": str(path)}
+        # Pin the filter when the folder is homogeneous, so the run never picks
+        # up a stray file of the other kind later.
+        kinds = {item.mode for item in items}
+        if len(kinds) == 1:
+            result["mode"] = kinds.pop()
+        return result
+
+    suffix = path.suffix.lower()
+
+    if suffix.lstrip(".") in AUDIO_EXTENSIONS:
+        lrc = _sibling_lrc(path)
+        if lrc is None:
+            raise InputPathError(
+                f"no subtitle file next to {path.name} — expected "
+                f"{path.with_suffix('.lrc').name} in the same folder"
+            )
+        return {"mode": "audio", "audio": str(path), "lrc": str(lrc)}
+
+    if suffix == ".lrc":
+        audio = _sibling_audio(path)
+        if audio is None:
+            raise InputPathError(
+                f"no recording next to {path.name} — expected {path.stem} with "
+                f"one of: {', '.join(sorted(AUDIO_EXTENSIONS))}"
+            )
+        return {"mode": "audio", "audio": str(audio), "lrc": str(path)}
+
+    if suffix == ".txt":
+        if _looks_like_interview(path):
+            return {"mode": "interview", "interview": str(path)}
+        return {"mode": "text", "text": str(path)}
+
+    raise InputPathError(
+        f"don't know how to process {path.name} — pass a folder, an audio file "
+        f"with a matching .lrc, an .lrc, or a .txt"
+    )
+
+
+def _apply_positional_paths(args: argparse.Namespace) -> None:
+    """Fold the positional path argument(s) into the named input options.
+
+    Two positionals keep the long-standing ``main.py lesson.mp3 lesson.lrc``
+    form. One positional goes through ``resolve_input_path``, which is what
+    makes ``main.py <folder>`` and ``main.py <recording>`` work.
+    """
+    paths = list(args.paths or [])
+    args.audio = None
+    args.lrc = None
+    args.smart_path = None
+
+    if not paths:
+        return
+
+    if len(paths) > 2:
+        raise InputPathError(
+            f"expected at most 2 positional paths (audio + lrc), got {len(paths)}"
+        )
+
+    if len(paths) == 2:
+        args.audio, args.lrc = paths
+        return
+
+    resolved = resolve_input_path(paths[0])
+    args.smart_path = paths[0]
+    if resolved.get("mode") and not args.mode:
+        args.mode = resolved["mode"]
+    args.audio = resolved.get("audio")
+    args.lrc = resolved.get("lrc")
+    if resolved.get("scan") and not args.scan_dir:
+        args.scan_dir = resolved["scan"]
+    if resolved.get("text") and not args.text_file:
+        args.text_file = resolved["text"]
+    if resolved.get("interview") and not args.interview_file:
+        args.interview_file = resolved["interview"]
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -352,6 +493,11 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Modes:
+  Just point at a path (folder or file) — the rest is chosen from menus:
+    %(prog)s /path/to/lessons
+    %(prog)s /path/to/lessons/lesson01.mp3
+    %(prog)s /path/to/lessons -y          # skip the menus, use config.yaml
+
   Interactive mode (choose inputs and common settings from menus):
     %(prog)s -i
     %(prog)s --interactive
@@ -380,12 +526,10 @@ Modes:
 
     input_group = parser.add_argument_group("Input")
     input_group.add_argument(
-        "audio", nargs="?", default=None,
-        help="Source audio file (mp3, wav, m4a, etc.) — audio mode",
-    )
-    input_group.add_argument(
-        "lrc", nargs="?", default=None,
-        help="LRC subtitle file with bilingual content — audio mode",
+        "paths", nargs="*", metavar="PATH", default=[],
+        help="One path — a folder to scan, an audio file (its matching .lrc is "
+             "found for you), an .lrc, or a .txt — and the settings menu opens. "
+             "Two paths are still read as the classic AUDIO LRC pair.",
     )
     input_group.add_argument(
         "--text", "-t", dest="text_file", default=None,
@@ -407,6 +551,11 @@ Modes:
     parser.add_argument(
         "-i", "--interactive", action="store_true",
         help="Start an interactive setup menu instead of composing CLI flags",
+    )
+    parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Never prompt — run a given PATH straight through with the "
+             "settings from config.yaml and any flags. Use for scripts/cron.",
     )
 
     output_group = parser.add_argument_group("Output paths")
@@ -515,7 +664,12 @@ Modes:
     lrc_group.add_argument("--delimiter", default=None)
     lrc_group.add_argument("--split-strategy", choices=["first", "last"], default=None)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    try:
+        _apply_positional_paths(args)
+    except (InputPathError, NotADirectoryError) as exc:
+        parser.error(str(exc))
+    return args
 
 
 def _apply_target_language_preset(config: dict, lang: str) -> None:
@@ -998,8 +1152,183 @@ def _interactive_apply_tts(config: dict) -> None:
         )
 
 
+def _interactive_apply_native_voice(config: dict) -> None:
+    """Choose the voice — and pace — of the native-language narration.
+
+    In an audio-only run this is the *only* voice the run synthesises, since the
+    target side is cut from the recording, so the pace prompt is offered there
+    too. In text/interview runs the same speaking rate would also move the
+    target voice, so pace is left to `tts.target_rate` and the advanced menu.
+    """
+    engine = config["tts"]["engine"]
+    audio_only = _run_is_audio_only(config)
+
+    if engine == "google":
+        google = config["tts"]["google"]
+        current = google.get("native_voice", "")
+        persona = current.rsplit("-", 1)[-1] if "Chirp3-HD-" in current else ""
+        choice = _prompt_choice(
+            "Native narration voice",
+            [("keep", f"Keep current ({current or 'config default'})")]
+            + [(name, name) for name in GOOGLE_PERSONAS],
+            default=persona if persona in GOOGLE_PERSONAS else "keep",
+        )
+        if choice != "keep":
+            google["native_voice"] = google_voice_with_persona(current, choice)
+    elif engine == "openai":
+        openai = config["tts"]["openai"]
+        current = openai.get("voice", "coral")
+        openai["voice"] = _prompt_choice(
+            "Native narration voice",
+            [(voice, voice) for voice in OPENAI_VOICES],
+            default=current if current in OPENAI_VOICES else "coral",
+        )
+    elif engine == "edge":
+        config["tts"]["native_voice"] = _prompt_string(
+            "Native narration voice",
+            config["tts"].get("native_voice", ""),
+            required=True,
+        )
+
+    if not audio_only:
+        return
+
+    rate = _prompt_float(
+        "Narration speed (1.0 = normal)", _native_rate(config),
+    )
+    _apply_native_rate(config, rate)
+
+
+def _native_rate(config: dict) -> float:
+    """Current speaking-rate multiplier for the native narration."""
+    engine = config["tts"]["engine"]
+    if engine == "google":
+        return float(config["tts"]["google"].get("speaking_rate") or 1.0)
+    if engine == "openai":
+        return float(config["tts"]["openai"].get("speed") or 1.0)
+    return _edge_rate_to_multiplier(config["tts"].get("rate", "+0%"))
+
+
+def _apply_native_rate(config: dict, rate: float) -> None:
+    """Set the narration speed for the active engine, clamped to the safe range.
+
+    Only reachable from an audio-only run, where nothing but the narration is
+    synthesised — so this never silently re-times a target voice.
+    """
+    rate = coerce_speaking_rate(rate)
+    if rate is None:
+        return
+    engine = config["tts"]["engine"]
+    if engine == "google":
+        config["tts"]["google"]["speaking_rate"] = rate
+    elif engine == "openai":
+        config["tts"]["openai"]["speed"] = rate
+    elif engine == "edge":
+        config["tts"]["rate"] = f"{round((rate - 1.0) * 100):+d}%"
+
+
+def _edge_rate_to_multiplier(rate: str) -> float:
+    """Read edge-tts' signed percentage ("+20%") back as a multiplier."""
+    try:
+        return 1.0 + float(str(rate).strip().rstrip("%")) / 100.0
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def _is_interview_config(config: dict) -> bool:
     return bool(config.get("paths", {}).get("interview"))
+
+
+def _run_is_audio_only(config: dict) -> bool:
+    """True when every item this run will process is a recording + LRC pair.
+
+    Such a run generates no target speech at all — the target side is sliced out
+    of the recording — so target-voice and target-language prompts have nothing
+    to act on and are skipped.
+    """
+    paths = config.get("paths", {})
+    scan = paths.get("scan")
+    if scan:
+        mode_filter = config.get("mode", "").strip().lower()
+        if mode_filter in ("audio", "text"):
+            return mode_filter == "audio"
+        try:
+            items = _probe_scan(scan)
+        except (OSError, NotADirectoryError):
+            return False
+        return bool(items) and all(item.mode == "audio" for item in items)
+    return bool(paths.get("audio") and paths.get("lrc"))
+
+
+def _probe_scan(folder: str | Path) -> list[ScanItem]:
+    """Scan a folder just to inspect it, without logging.
+
+    The real run scans and reports again; without this the scanner's
+    "no matching .lrc" warnings would be printed twice per unpaired file.
+    """
+    scanner_log = logging.getLogger("scanner.scanner")
+    previous = scanner_log.disabled
+    scanner_log.disabled = True
+    try:
+        return scan_folder(folder)
+    finally:
+        scanner_log.disabled = previous
+
+
+def _unpaired_audio(folder: str | Path) -> list[str]:
+    """Recordings in a folder that have no matching .lrc, so cannot be used."""
+    try:
+        entries = list(Path(folder).iterdir())
+    except OSError:
+        return []
+    return sorted(
+        f.name
+        for f in entries
+        if f.is_file()
+        and f.suffix.lower().lstrip(".") in AUDIO_EXTENSIONS
+        and not any(f.stem.endswith(s) for s in OUTPUT_SUFFIXES)
+        and not f.with_suffix(".lrc").is_file()
+    )
+
+
+def _print_input_preview(config: dict) -> None:
+    """Show what a pasted path resolved to, before anything is generated."""
+    paths = config["paths"]
+    scan = paths.get("scan")
+
+    print()
+    if scan:
+        mode_filter = config.get("mode", "").strip().lower()
+        try:
+            items = _probe_scan(scan)
+        except (OSError, NotADirectoryError) as exc:
+            print(f"Input: folder {scan} (could not be scanned: {exc})")
+            return
+        if mode_filter in ("audio", "text"):
+            items = [item for item in items if item.mode == mode_filter]
+        print(f"Input: folder {scan}")
+        for item in items:
+            if item.mode == "audio":
+                print(f"  • {item.audio_path.name} + {item.lrc_path.name}")
+            else:
+                print(f"  • {item.text_path.name}")
+        print(f"  {len(items)} item{'s' if len(items) != 1 else ''} to process")
+        # Recordings without subtitles are silently dropped by the scanner;
+        # say so here, while there is still a chance to fix the folder.
+        unpaired = _unpaired_audio(scan)
+        if unpaired:
+            print(f"  skipping {len(unpaired)} recording(s) with no .lrc: "
+                  f"{', '.join(unpaired[:4])}"
+                  + (" …" if len(unpaired) > 4 else ""))
+    elif paths.get("audio"):
+        audio = Path(paths["audio"])
+        print(f"Input: {audio.name} + {Path(paths['lrc']).name}")
+        print(f"  in {audio.parent}")
+    elif paths.get("interview"):
+        print(f"Input: interview script {paths['interview']}")
+    elif paths.get("text"):
+        print(f"Input: bilingual text {paths['text']}")
+    print("Output goes next to the source files.")
 
 
 def _config_for_interview_role(config: dict, role: str) -> dict:
@@ -1128,12 +1457,12 @@ def _interactive_apply_split_outputs(config: dict) -> None:
         config["loop"]["split_outputs"] = choice == "yes"
 
 
-def _interactive_apply_advanced(config: dict) -> None:
-    if not _prompt_yes_no("Adjust advanced settings?", default=False):
+def _interactive_apply_timing(config: dict) -> None:
+    """The three silences that shape one Echo Loop pass."""
+    if not _prompt_yes_no(
+        f"Adjust silences? (currently {_timing_label(config)})", default=False,
+    ):
         return
-
-    print()
-    print("Timing")
     config["timing"]["after_first_target"] = _prompt_float(
         "Silence after first target (seconds)",
         config["timing"]["after_first_target"],
@@ -1147,6 +1476,16 @@ def _interactive_apply_advanced(config: dict) -> None:
         config["timing"]["after_second_target"],
     )
 
+
+def _timing_label(config: dict) -> str:
+    timing = config["timing"]
+    return (
+        f"{timing['after_first_target']}s / {timing['after_native']}s / "
+        f"{timing['after_second_target']}s"
+    )
+
+
+def _interactive_apply_volume(config: dict) -> None:
     volume = _prompt_choice(
         "TTS volume",
         [
@@ -1168,6 +1507,16 @@ def _interactive_apply_advanced(config: dict) -> None:
         config["tts"]["normalize"] = _prompt_float(
             "Target dBFS", -20.0 if default is None else default,
         )
+
+
+def _interactive_apply_advanced(config: dict) -> None:
+    """Rarely-touched escape hatches: raw voice names and the LRC delimiter.
+
+    Voices entered here are full engine voice names and are asked last, so they
+    override the persona picked in the narration-voice prompt above.
+    """
+    if not _prompt_yes_no("Adjust advanced settings?", default=False):
+        return
 
     engine = config["tts"]["engine"]
     if _is_interview_config(config):
@@ -1279,24 +1628,39 @@ def _print_interactive_summary(config: dict) -> None:
         print(f"  Output LRC:  {lrc_out}")
     print(f"  Engine:      {_engine_label(config)}")
     print(f"  Loop:        {_loop_label(config)}")
+    print(f"  Silences:    {_timing_label(config)}")
     print(f"  Volume:      {_volume_label(config)}")
     print()
 
 
-def interactive_setup(config: dict) -> dict:
-    """Collect a runnable configuration from an interactive menu."""
+def interactive_setup(config: dict, select_inputs: bool = True) -> dict:
+    """Collect a runnable configuration from an interactive menu.
+
+    ``select_inputs=False`` skips the input menu — used when a PATH was already
+    given on the command line, so the session starts straight at the settings.
+    """
     config = copy.deepcopy(config)
 
     print()
     print("Echo Loop Generator - interactive setup")
     print("Press Enter to accept defaults shown in brackets.")
 
-    _interactive_select_inputs(config)
-    _interactive_apply_language(config)
+    if select_inputs:
+        _interactive_select_inputs(config)
+    else:
+        _print_input_preview(config)
+
+    # An audio-only run slices its target speech out of the recording, so the
+    # target-language preset has nothing to apply to.
+    if not _run_is_audio_only(config):
+        _interactive_apply_language(config)
     _interactive_apply_tts(config)
+    _interactive_apply_native_voice(config)
     _interactive_apply_interview_voices(config)
     _interactive_apply_loop(config)
     _interactive_apply_split_outputs(config)
+    _interactive_apply_timing(config)
+    _interactive_apply_volume(config)
     _interactive_apply_advanced(config)
     _print_interactive_summary(config)
 
@@ -1434,18 +1798,29 @@ def _engine_label(config: dict) -> str:
             f"native={config['tts']['native_voice']})"
         )
 
+    # An audio-only run never synthesises target speech, so naming a target
+    # voice there would describe a voice the run cannot use.
+    narration_only = _run_is_audio_only(config)
+
     if engine == "openai":
         oai = config["tts"]["openai"]
+        native = oai.get("native_voice") or oai["voice"]
+        if narration_only:
+            return f"openai ({oai['model']}, native={native})"
         if oai.get("target_voice") or oai.get("native_voice"):
             return (
                 f"openai ({oai['model']}, "
                 f"target={oai.get('target_voice') or oai['voice']}, "
-                f"native={oai.get('native_voice') or oai['voice']})"
+                f"native={native})"
             )
         return f"openai ({oai['model']}, voice={oai['voice']})"
     if engine == "google":
         g = config["tts"]["google"]
+        if narration_only:
+            return f"google (native={g['native_voice']})"
         return f"google (target={g['target_voice']}, native={g['native_voice']})"
+    if narration_only:
+        return f"edge-tts (native={config['tts']['native_voice']})"
     return "edge-tts"
 
 
@@ -2238,8 +2613,28 @@ def main():
     config = load_config(args.config)
     config = apply_cli_overrides(config, args)
 
-    if args.interactive or (sys.stdin.isatty() and not _config_has_input(config)):
-        config = interactive_setup(config)
+    # -y is the scripting escape hatch. Otherwise -i always opens the menu, and
+    # a terminal session opens it for a PATH argument or for a run with nothing
+    # configured yet. A PATH skips the input menu — the path *is* the input.
+    if not args.yes:
+        if args.smart_path and not (args.interactive or sys.stdin.isatty()):
+            # A bare PATH promises a settings menu, and there is no terminal to
+            # show it in. Generating anyway would silently spend TTS budget on
+            # settings nobody confirmed, so make the caller say -y for that.
+            # Logging is not configured yet, so this goes straight to stderr.
+            print(
+                f"error: {args.smart_path} was given without a terminal to show "
+                f"the settings menu.\n"
+                f"       Add -y to run it with the settings from config.yaml.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        interactive = args.interactive or (
+            sys.stdin.isatty()
+            and (bool(args.smart_path) or not _config_has_input(config))
+        )
+        if interactive:
+            config = interactive_setup(config, select_inputs=not args.smart_path)
 
     setup_logging()
 

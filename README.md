@@ -147,6 +147,13 @@ You supply a source audio file and an LRC subtitle file. Target audio is extract
 source.mp3 + source.lrc  →  source_echo.m4a + source_echo.lrc
 ```
 
+Passing just the recording is enough — the matching `.lrc` beside it is found
+for you, and the settings menu opens:
+
+```bash
+python main.py source.mp3
+```
+
 ### Text-Only Mode
 
 You supply a plain text file with bilingual entries. Both target and native audio are generated entirely via TTS. No source recording needed.
@@ -172,6 +179,17 @@ lessons/
   └── vocab_echo.m4a    + vocab_echo.lrc
 ```
 
+Passing the folder as a bare path does the same and opens the settings menu
+first; `--scan` runs it with whatever `config.yaml` already says:
+
+```bash
+python main.py lessons/          # menu, then run
+python main.py --scan lessons/   # straight to the run
+```
+
+Recordings with no matching `.lrc` are listed and skipped rather than failing
+the run.
+
 ## Requirements
 
 - Python 3.10+
@@ -185,56 +203,41 @@ lessons/
 pip install -r requirements.txt
 ```
 
-## Optional Transcription API
+## Where Transcription Happens (not here)
 
-`transcription_server.py` adds a FastAPI service that accepts uploaded audio,
-transcribes it with faster-whisper + Silero VAD, streams progress over SSE, and
-returns generated LRC text.
+This project does **not** transcribe audio. It starts from a bilingual LRC that
+already exists. Transcription and translation live in a separate project:
 
-Run it:
-
-```bash
-uvicorn transcription_server:app --host 0.0.0.0 --port 8000
+```
+音频
+ ↓  subtitle-automation  (~/WebstormProjects/subtitle-automation)
+ │    src/whisper-stt.ts    → whisper on a Windows GPU box (192.168.31.50:8000)
+ │    src/lrc-segmenter.ts  → 逐词结果切成 LRC 行
+ │    src/translator.ts     → 翻译成双语 LRC
+ ↓  双语 LRC + 音频  →  SYNC_DIR
+ ↓  echoEnglish (this repo)  →  Echo Loop 音频
 ```
 
-Submit a job:
+The `echo_pipeline` wrapper in `~/bin` drives both halves; see
+[shellReadme.md](shellReadme.md).
 
-```bash
-curl -F "audio=@lesson01.mp3" -F "lang=ja" http://localhost:8000/jobs
-```
-
-Watch progress:
-
-```bash
-curl -N http://localhost:8000/jobs/<job_id>/events
-```
-
-Fetch the LRC result:
-
-```bash
-curl http://localhost:8000/jobs/<job_id>/result
-```
-
-Supported transcription models:
-
-| Language | Model form value | faster-whisper repo |
-|---|---|---|
-| `en` | `default` / `large-v3-turbo` | `Systran/faster-whisper-large-v3-turbo` |
-| `en` | `large-v3` | `Systran/faster-whisper-large-v3` |
-| `ja` | `default` | `kotoba-tech/kotoba-whisper-v2.0-faster` |
-
-Environment overrides:
-
-| Variable | Default |
-|---|---|
-| `TRANSCRIBE_DEVICE` | `cuda` |
-| `TRANSCRIBE_COMPUTE_TYPE` | `int8_float16` |
-| `TRANSCRIBE_IDLE_RELEASE_SECONDS` | `600` |
-| `TRANSCRIBE_JOB_RETENTION_SECONDS` | `3600` |
+> An earlier version of this README documented an "Optional Transcription API"
+> (`transcription_server.py`, faster-whisper + Silero VAD, `TRANSCRIBE_DEVICE=cuda`)
+> as if it were part of this repo. That file has never existed here — `git log --all`
+> shows only 50 files in the entire history, none of them transcription-related. It
+> described the service running on the Windows GPU machine. The section was removed
+> because it repeatedly sent people looking for code that isn't in this project.
 
 ## Quick Start
 
 ```bash
+# Point at a path — a folder or a single file — and pick settings from menus
+python main.py /path/to/lessons
+python main.py /path/to/lessons/lesson01.mp3
+
+# Same, but no questions asked (uses config.yaml) — for scripts and cron
+python main.py /path/to/lessons -y
+
 # Interactive mode — pick inputs and common settings from menus
 python main.py -i
 
@@ -264,6 +267,8 @@ python main.py
 ### Synopsis
 
 ```
+python main.py PATH                    # one path + settings menu (see below)
+python main.py PATH -y                 # same, no prompts (settings from config.yaml)
 python main.py [audio] [lrc]           # audio mode (positional)
 python main.py --text FILE             # text-only mode
 python main.py --interview FILE        # mock interview mode
@@ -275,12 +280,55 @@ python main.py                         # config-only (paths from config.yaml)
 If `config.yaml` does not contain any input paths and you run `python main.py`
 from an interactive terminal, the same guided menu opens automatically.
 
+### One Path, Then Menus
+
+A single `PATH` is classified for you, so you can paste whatever you have —
+a whole recording folder or one file — without remembering which flag it needs:
+
+| You pass | You get |
+|---|---|
+| a folder | batch mode over every audio+LRC pair and/or text file inside |
+| an audio file (`.mp3`, `.m4a`, `.wav`, …) | audio mode; the matching `<stem>.lrc` beside it is found for you |
+| an `.lrc` | audio mode; the matching recording beside it is found for you |
+| a `.txt` | interview mode if the lines carry `Q:` / `A:` markers, otherwise text mode |
+
+Then the settings menu opens — TTS engine and narration voice, loop pattern,
+single vs. split output, silences, volume. Output is written next to the source
+files, so a folder synced to your phone gets the Echo Loop audio in place.
+
+A path that doesn't resolve fails immediately, before any TTS is billed:
+
+```
+main.py: error: no subtitle file next to lesson01.mp3 — expected lesson01.lrc in the same folder
+```
+
+A folder whose items are all audio+LRC pairs skips the target-language and
+target-voice prompts entirely — the target side of such a run is cut from your
+recording, so the only voice it generates is the native-language narration.
+
+Add `-y` / `--yes` to skip every prompt and run straight through with the
+settings from `config.yaml` (plus any flags you passed). CLI flags still
+override the menus, so `python main.py DIR -y --engine edge --variant full`
+works unattended.
+
+`-y` is **required** when a bare `PATH` runs without a terminal — in a script,
+a pipe, or cron. Rather than quietly generating audio against settings nobody
+confirmed, the run stops:
+
+```
+error: /path/to/lessons was given without a terminal to show the settings menu.
+       Add -y to run it with the settings from config.yaml.
+```
+
+The older `--scan` / `--text` / `--interview` forms never prompt, so existing
+scripts are unaffected.
+
 ### Input Arguments
 
 | Flag / Positional | Description |
 |---|---|
-| `audio` | *(positional, optional)* Source audio file (mp3, wav, m4a, etc.) — audio mode |
-| `lrc` | *(positional, optional)* LRC subtitle file with bilingual content — audio mode |
+| `PATH` | *(positional, optional)* **One** path — folder, audio file, `.lrc`, or `.txt`. Classified automatically, then the settings menu opens. See [One Path, Then Menus](#one-path-then-menus) |
+| `PATH PATH` | *(positional, optional)* **Two** paths are read as the classic `audio lrc` pair — audio mode |
 | `--text, -t FILE` | Bilingual text file — text-only mode |
 | `--interview FILE` | Mock interview text file using `Q:` / `A:` speaker markers |
 | `--scan, -s DIR` | Folder to scan — batch mode |
@@ -291,6 +339,7 @@ from an interactive terminal, the same guided menu opens automatically.
 |---|---|
 | `--mode {audio,text,interview}` | Force mode. Overrides config `mode:` and auto-detection. In batch mode, acts as a **filter**: `audio` = only audio+LRC pairs, `text` = only .txt files, omitted = both |
 | `-i, --interactive` | Start a guided menu for choosing input mode, paths, language preset, TTS engine, loop pattern, and output layout |
+| `-y, --yes` | Never prompt. Runs a given `PATH` straight through using `config.yaml` plus any flags — for scripts and cron |
 
 ### Output Paths
 
