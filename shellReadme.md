@@ -107,6 +107,34 @@ cat ~/WebstormProjects/subtitle-automation/.env
 # SYNC_DIR=/path/to/your/sync/folder
 ```
 
+### 脚本正本在仓库里
+
+所有脚本的正本都在本仓库 `scripts/`，`~/bin` 下是软链接：
+
+```
+scripts/echo_pipeline            ← ~/bin/echo_pipeline
+scripts/echo_pipeline_openai     ← ~/bin/echo_pipeline_openai
+scripts/echo_pipeline_translate  ← ~/bin/echo_pipeline_translate
+scripts/echo_interactive         ← ~/bin/echo_interactive
+scripts/echo_publish             ← ~/bin/echo_publish
+scripts/extract_audio            ← ~/bin/extract_audio
+scripts/paths.env                ← ~/.config/echo/paths.env
+```
+
+改脚本直接改 `scripts/` 下的文件，`~/bin` 立即生效，同时有 diff 可查。
+
+> 这么做的原因：这些脚本原本只存在于 `~/bin`，不在任何版本控制里，于是同一个脚本
+> 出现了多份互相分叉的副本。代价是实打实的 —— `extract_audio` 的两份副本，
+> `~/bin` 那份缺了切分选项的说明，仓库那份写着 `--max-duration, -d` 这个
+> **根本不存在的参数**；两份的 usage 都和 `extract_audio.py` 对不上。
+> subtitle-automation 里那三个 `.sh` 也是同样的分叉（已和在用版本差 24–36 行）。
+
+新建软链接：
+
+```bash
+ln -s ~/PycharmProjects/echoEnglish/scripts/<名字> ~/bin/<名字>
+```
+
 ### 路径配置（唯一真源）
 
 四个脚本（`echo_pipeline`、`echo_pipeline_openai`、`echo_pipeline_translate`、
