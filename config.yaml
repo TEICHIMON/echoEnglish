@@ -129,22 +129,23 @@ loop:
   #   full:        T-S-N-S-T-S (default)
   #   progressive: T-S-N-S-T-S + T-S-silence-S-T-S (two passes per segment)
   #   shadow:      T-S-silence-S-T-S (native replaced with equal-length silence)
-  # Default is "shadow" = a single T-S-T file. The dual T-N-T + T-S-T mode is
-  # opt-in (pick "progressive"/custom + split_outputs in the UI/CLI).
-  variant: "shadow"
+  # Default is one T-N-T pass plus one T-S-T pass, emitted as separate files.
+  # These are defaults, not restrictions: the Web UI and CLI can override the
+  # variant, repeat counts, and split behavior for any individual run.
+  variant: "progressive"
 
   # Optional repeat overrides per segment. Leave empty to use the variant preset.
   # Order is always all T-N-T passes first, then all T-S-T passes.
   # Example: tnt_repeats: 2 and tst_repeats: 3 produces
   # T-N-T + T-N-T + T-S-T + T-S-T + T-S-T for each segment.
-  tnt_repeats:
-  tst_repeats:
+  tnt_repeats: 1
+  tst_repeats: 1
 
   # When true, emit two files per input — {stem}_tnt.{ext} contains only the
   # T-N-T passes, {stem}_tst.{ext} contains only the T-S-T passes. TTS is
   # generated once and shared between both files (no extra API cost).
-  # Default off: the shadow variant produces a single {stem}_tst.{ext}.
-  split_outputs: false
+  # Default on: emit one {stem}_tnt and one {stem}_tst file.
+  split_outputs: true
 
 interview:
   # Default interview target language preset. CLI `--lang ja` or

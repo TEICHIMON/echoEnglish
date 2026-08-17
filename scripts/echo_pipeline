@@ -70,11 +70,11 @@ run_echo_on_folder() {
     target_voice=$(get_target_voice "$folder_name")
 
     # Generation settings come from ~/.config/echo/paths.env, NOT from
-    # echoEnglish's config.yaml: that file is shared with the web UI, whose
-    # defaults differ (single T-S-T, 0 dB, rclone sync to Google Drive), so
-    # inheriting it would let a web-UI tweak silently change this pipeline's
-    # output. --no-sync keeps the output where subtitle-automation put it, with
-    # no second upload.
+    # echoEnglish's config.yaml: that file is shared with the web UI. The loop
+    # defaults intentionally match (1×T-N-T + 1×T-S-T, split), while volume and
+    # sync policy differ. Keeping shell settings separate also prevents a Web UI
+    # tweak from silently changing this pipeline. --no-sync keeps the output
+    # where subtitle-automation put it, with no second upload.
     local -a args=(
         main.py --scan "$folder"
         --engine "$ECHO_ENGINE"

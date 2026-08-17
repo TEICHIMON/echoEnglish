@@ -374,6 +374,11 @@ In single-file modes, if omitted, defaults to `<input_stem>_echo.<format>` in th
 
 Variant presets are `full` = `1 T-N-T + 0 T-S-T`, `progressive` = `1 T-N-T + 1 T-S-T`, and `shadow` = `0 T-N-T + 1 T-S-T`. Explicit repeat counts override the matching preset value. Passes are always ordered as all T-N-T passes first, then all T-S-T passes.
 
+The shipped default is `progressive` with one pass of each and
+`split_outputs: true`, so a run emits separate `_tnt` and `_tst` files. This is
+only a default: the Web UI, CLI flags, and shell pipeline environment variables
+can all override the repeat counts and output layout.
+
 ### TTS Engine & Voice Overrides
 
 | Flag | Default | Description |
@@ -498,8 +503,9 @@ lrc:
 
 loop:
   variant: "progressive"
-  tnt_repeats:          # optional; leave empty to use the variant preset
-  tst_repeats:          # optional; leave empty to use the variant preset
+  tnt_repeats: 1        # optional; leave empty to use the variant preset
+  tst_repeats: 1        # optional; leave empty to use the variant preset
+  split_outputs: true   # emit separate _tnt and _tst files
 
 interview:
   lang: "en"

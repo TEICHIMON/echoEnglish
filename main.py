@@ -205,10 +205,10 @@ def load_config(config_path: str | Path | None = None) -> dict:
             "split_strategy": "last",
         },
         "loop": {
-            "variant": "full",
-            "tnt_repeats": None,
-            "tst_repeats": None,
-            "split_outputs": False,
+            "variant": "progressive",
+            "tnt_repeats": 1,
+            "tst_repeats": 1,
+            "split_outputs": True,
         },
         "sync": {
             "enabled": False,
@@ -1848,8 +1848,8 @@ def _split_enabled(config: dict) -> bool:
 def _single_output_suffix(config: dict) -> str:
     """Suffix for a single (non-split) output file, based on the loop pattern.
 
-    A T-S-T-only run (the default "shadow" variant) is named ``_tst`` and a
-    T-N-T-only run ``_tnt``; a mixed run keeps the neutral ``_echo``. When split
+    A T-S-T-only run is named ``_tst`` and a T-N-T-only run ``_tnt``; a mixed
+    run keeps the neutral ``_echo``. When split
     output is enabled the caller derives ``_tnt`` / ``_tst`` itself (and strips a
     trailing ``_echo``), so we keep ``_echo`` here to feed that path cleanly.
     """

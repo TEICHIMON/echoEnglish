@@ -163,20 +163,19 @@ ECHO_NATIVE_VOICE="cmn-CN-Chirp3-HD-Kore"
 ECHO_TARGET_VOICE_EN="en-US-Neural2-F"     # 按文件夹名里的 English/Japanese 选
 ECHO_TARGET_VOICE_JA="ja-JP-Neural2-B"
 ECHO_VARIANT="progressive"
-ECHO_TNT_REPEATS=2
+ECHO_TNT_REPEATS=1
 ECHO_TST_REPEATS=1
 ECHO_GAIN=-6
-ECHO_SPLIT_OUTPUTS=false
+ECHO_SPLIT_OUTPUTS=true
 ```
 
-**这些刻意不从 `config.yaml` 读**：那份配置由 web UI 共用，默认值不同（单个 T-S-T、
-0 dB、rclone 同步到 Google Drive）。跟着它走的话，为 web UI 调一次参数就会悄悄改掉
-这条流水线的产出。
+**这些刻意不从 `config.yaml` 读**：那份配置由 web UI 共用，音量和同步策略不同。
+循环默认值在两处保持一致（1×T-N-T + 1×T-S-T、拆分输出），但仍可分别覆盖。
 
 临时覆盖两种方式：
 
 ```bash
-echo_pipeline --split                    # 一次出 _tnt + _tst，TTS 只生成一次不额外花钱
+echo_pipeline --no-split                 # 临时合并成一个 _echo 文件
 echo_pipeline --variant shadow           # 纯 T-S-T
 echo_pipeline --variant shadow --tst 3   # 覆盖 preset 的重复次数
 ECHO_GAIN=0 echo_pipeline                # 任何一项都能用环境变量覆盖
