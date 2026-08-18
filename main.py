@@ -189,6 +189,10 @@ def load_config(config_path: str | Path | None = None) -> dict:
             },
             "lang_presets": copy.deepcopy(LANG_PRESETS),
             "gain": 0,
+            # Gain for the native (Chinese) clips only. The Chinese narration
+            # is louder than the target-language audio, so it is pulled down
+            # by default. None = follow "gain".
+            "native_gain": -11,
             "normalize": None,
             # Speech-rate multiplier applied to the TARGET voice only (the
             # native/Chinese narration keeps the engine default, so it stays
@@ -298,6 +302,12 @@ def load_config(config_path: str | Path | None = None) -> dict:
     if tts.get("gain") is None:
         tts["gain"] = 0
     tts["gain"] = float(tts["gain"])
+
+    native_gain = tts.get("native_gain")
+    if native_gain is None or native_gain == "":
+        tts["native_gain"] = None
+    else:
+        tts["native_gain"] = float(native_gain)
 
     norm = tts.get("normalize")
     if norm is not None and norm != "":
@@ -630,6 +640,7 @@ Modes:
     tts_group.add_argument("--voice", default=None)
     tts_group.add_argument("--rate", default=None)
     tts_group.add_argument("--gain", type=float, default=None)
+    tts_group.add_argument("--native-gain", type=float, default=None)
     tts_group.add_argument("--normalize", type=float, default=None)
     tts_group.add_argument("--openai-voice", default=None)
     tts_group.add_argument("--openai-instructions", default=None)
@@ -779,6 +790,8 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["tts"]["rate"] = args.rate
     if args.gain is not None:
         config["tts"]["gain"] = args.gain
+    if args.native_gain is not None:
+        config["tts"]["native_gain"] = args.native_gain
     if args.normalize is not None:
         config["tts"]["normalize"] = args.normalize
 
@@ -1498,9 +1511,15 @@ def _interactive_apply_volume(config: dict) -> None:
     )
     if volume == "none":
         config["tts"]["gain"] = 0
+        config["tts"]["native_gain"] = None
         config["tts"]["normalize"] = None
     elif volume == "gain":
         config["tts"]["gain"] = _prompt_float("Gain in dB", config["tts"]["gain"])
+        native_gain = config["tts"].get("native_gain")
+        config["tts"]["native_gain"] = _prompt_float(
+            "Chinese (native) gain in dB",
+            config["tts"]["gain"] if native_gain is None else native_gain,
+        )
         config["tts"]["normalize"] = None
     elif volume == "normalize":
         default = config["tts"]["normalize"]
@@ -1747,15 +1766,21 @@ def resolve_output_paths_for_item(item: ScanItem, config: dict) -> tuple[Path, P
     return audio_out, lrc_out
 
 
+def _gain_label(gain: float) -> str:
+    sign = "+" if gain > 0 else ""
+    return f"{sign}{gain:g} dB"
+
+
 def _volume_label(config: dict) -> str:
     norm = config["tts"]["normalize"]
     gain = config["tts"]["gain"]
+    native_gain = config["tts"].get("native_gain")
     if norm is not None:
         return f"normalize to {norm} dBFS"
-    elif gain != 0:
-        sign = "+" if gain > 0 else ""
-        return f"{sign}{gain} dB"
-    return "default"
+    base = _gain_label(gain) if gain != 0 else "default"
+    if native_gain is not None and native_gain != gain:
+        return f"{base} (native {_gain_label(native_gain)})"
+    return base
 
 
 def _rate_label(config: dict) -> str:
@@ -1925,9 +1950,20 @@ def _print_segment_summary(segments: list) -> None:
         logger.info(f"    ... and {len(segments) - 3} more")
 
 
-def _tts_volume_kwargs(config: dict) -> dict:
+def _tts_volume_kwargs(config: dict, native: bool = False) -> dict:
+    """Volume kwargs for one TTS batch.
+
+    The native (Chinese) narration has its own gain (`tts.native_gain`) so it
+    can sit below the target-language audio; it falls back to `tts.gain` when
+    unset. `tts.normalize` still overrides both.
+    """
+    gain = config["tts"]["gain"]
+    if native:
+        native_gain = config["tts"].get("native_gain")
+        if native_gain is not None:
+            gain = native_gain
     return {
-        "gain_db": config["tts"]["gain"],
+        "gain_db": gain,
         "normalize_target_dbfs": config["tts"]["normalize"],
     }
 
@@ -2055,7 +2091,7 @@ def run_audio_mode(config: dict) -> None:
         after_second_target=config["timing"]["after_second_target"],
     )
 
-    vol_kwargs = _tts_volume_kwargs(config)
+    native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
 
     folder_log = attach_folder_log(audio_path.parent)
@@ -2111,7 +2147,7 @@ def run_audio_mode(config: dict) -> None:
             rate=config["tts"]["rate"],
             pitch=config["tts"]["pitch"],
             work_dir=work_dir,
-            **vol_kwargs,
+            **native_vol_kwargs,
             **eng_kwargs,
         )
         logger.info(f"  Generated {len(native_audios)} TTS audio clips")
@@ -2140,6 +2176,7 @@ def run_text_mode(config: dict) -> None:
     )
 
     vol_kwargs = _tts_volume_kwargs(config)
+    native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
 
     folder_log = attach_folder_log(text_path.parent)
@@ -2202,7 +2239,7 @@ def run_text_mode(config: dict) -> None:
             rate=config["tts"]["rate"],
             pitch=config["tts"]["pitch"],
             work_dir=work_dir,
-            **vol_kwargs,
+            **native_vol_kwargs,
             **eng_kwargs,
         )
         logger.info(f"  Generated {len(native_audios)} native TTS clips")
@@ -2271,6 +2308,7 @@ def run_interview_mode(config: dict) -> None:
     )
 
     vol_kwargs = _tts_volume_kwargs(config)
+    native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
 
     folder_log = attach_folder_log(interview_path.parent)
@@ -2329,7 +2367,7 @@ def run_interview_mode(config: dict) -> None:
             rate=config["tts"]["rate"],
             pitch=config["tts"]["pitch"],
             work_dir=work_dir,
-            **vol_kwargs,
+            **native_vol_kwargs,
             **eng_kwargs,
         )
         logger.info(f"  Generated {len(native_audios)} native TTS clips")
@@ -2517,7 +2555,7 @@ def _run_single_audio(
     audio_path = item.audio_path
     lrc_path = item.lrc_path
 
-    vol_kwargs = _tts_volume_kwargs(config)
+    native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
 
     logger.info(f"  Audio: {audio_path.name}")
@@ -2545,7 +2583,7 @@ def _run_single_audio(
         rate=config["tts"]["rate"],
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
-        **vol_kwargs,
+        **native_vol_kwargs,
         **eng_kwargs,
     )
 
@@ -2566,6 +2604,7 @@ def _run_single_text(
     text_path = item.text_path
 
     vol_kwargs = _tts_volume_kwargs(config)
+    native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
 
     logger.info(f"  Text: {text_path.name}")
@@ -2596,7 +2635,7 @@ def _run_single_text(
         rate=config["tts"]["rate"],
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
-        **vol_kwargs,
+        **native_vol_kwargs,
         **eng_kwargs,
     )
 
