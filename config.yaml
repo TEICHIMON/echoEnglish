@@ -85,6 +85,13 @@ tts:
   #  +3  = boost by 3 dB
   gain: 0
 
+  # native_gain: fixed dB adjustment applied to the NATIVE (Chinese) TTS
+  #   clips only, replacing 'gain' for those clips. The Chinese narration
+  #   comes out noticeably louder than the target-language audio, so it is
+  #   pulled down by default. Leave empty to make the Chinese clips follow
+  #   'gain' like everything else. Ignored when 'normalize' is set.
+  native_gain: -11
+
   # normalize: target average loudness (dBFS) for every TTS clip.
   #   Leave empty to disable. When set, each clip is individually
   #   scaled so its dBFS matches this value. Overrides 'gain'.

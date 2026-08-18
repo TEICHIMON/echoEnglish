@@ -387,6 +387,12 @@ class JobManager:
             config["tts"]["gain"] = float(req["gain"])
             config["tts"]["normalize"] = None
 
+        # Chinese narration gain — independent of the global gain above, so a
+        # run can lower the target voice without dragging the Chinese with it.
+        if req.get("native_gain") is not None:
+            config["tts"]["native_gain"] = float(req["native_gain"])
+            config["tts"]["normalize"] = None
+
         # The chosen name doubles as the sync folder label, so a run's files
         # (incl. the EN + JA outputs of a dual run) land in YYYY-MM-DD_<name>.
         slug = req.get("slug")

@@ -81,13 +81,29 @@ function loopLabel(loop) {
   return loop.split_outputs ? `${base}，拆分输出` : base;
 }
 
+function isBlank(value) {
+  return value === null || value === undefined || value === "";
+}
+
+function gainLabel(gain) {
+  const value = Number(gain || 0);
+  return `${value > 0 ? "+" : ""}${value} dB`;
+}
+
+// Gain applied to every clip. The Chinese narration overrides it when
+// native_gain is set, so that case is spelled out separately.
 function volumeLabel(tts) {
   if (!tts) return "配置默认";
-  if (tts.normalize !== null && tts.normalize !== undefined && tts.normalize !== "") {
-    return `normalize ${tts.normalize} dBFS`;
-  }
-  const gain = Number(tts.gain || 0);
-  return `${gain > 0 ? "+" : ""}${gain} dB`;
+  if (!isBlank(tts.normalize)) return `normalize ${tts.normalize} dBFS`;
+  return gainLabel(tts.gain);
+}
+
+// Gain the Chinese narration actually gets: native_gain, or the global gain
+// when it is unset.
+function nativeVolumeLabel(tts) {
+  if (!tts) return "配置默认";
+  if (!isBlank(tts.normalize)) return `normalize ${tts.normalize} dBFS`;
+  return gainLabel(isBlank(tts.native_gain) ? tts.gain : tts.native_gain);
 }
 
 // Placeholder for a speech-rate box: the configured value if there is one,
@@ -128,6 +144,7 @@ function updateDefaultLabels() {
   setDefaultOption("variant", `（配置默认：${loopLabel(appDefaults.loop)}）`);
 
   $("gain").placeholder = `配置默认：${volumeLabel(appDefaults.tts)}`;
+  $("nativeGain").placeholder = `配置默认：${nativeVolumeLabel(appDefaults.tts)}`;
   $("rate").placeholder = rateLabel(appDefaults.tts && appDefaults.tts.target_rate);
   const interviewDefaults = appDefaults.interview || {};
   $("qRate").placeholder = rateLabel(
@@ -145,7 +162,7 @@ function updateDefaultLabels() {
     ["TTS", engineLabel(appDefaults.engine)],
     ["循环", loopLabel(appDefaults.loop)],
     ["停顿", timingLabel(appDefaults.timing)],
-    ["音量", volumeLabel(appDefaults.tts)],
+    ["音量", `${volumeLabel(appDefaults.tts)}（中文 ${nativeVolumeLabel(appDefaults.tts)}）`],
     ["输出", `${appDefaults.output.format} / ${appDefaults.output.bitrate}`],
     ["同步", syncLabel(appDefaults.sync)],
   ]
@@ -734,6 +751,7 @@ function collectRequest() {
   if (Object.keys(timing).length) req.timing = timing;
 
   if ($("gain").value !== "") req.gain = parseFloat($("gain").value);
+  if ($("nativeGain").value !== "") req.native_gain = parseFloat($("nativeGain").value);
 
   return req;
 }

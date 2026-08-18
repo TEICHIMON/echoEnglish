@@ -9,7 +9,7 @@
   <script>try{if(localStorage.getItem("echoTheme")==="dark")document.documentElement.dataset.theme="dark";}catch(e){}</script>
   <!-- Keep the query version in sync for CSS/JS releases so a newly deployed
        HTML shell can never run against stale cached assets. -->
-  <link rel="stylesheet" href="/static/style.css?v=20260731-spoken-q-rate-1" />
+  <link rel="stylesheet" href="/static/style.css?v=20260818-native-gain-1" />
 </head>
 <body>
   <main class="app">
@@ -231,10 +231,16 @@
             <span>双音频模式（拆成 _tnt + _tst 两个文件）</span>
           </label>
 
-          <label class="field">
-            <span>音量增益 (dB，空=配置默认)</span>
-            <input id="gain" type="number" step="1" placeholder="例如 -6" />
-          </label>
+          <div class="field-row">
+            <label class="field">
+              <span>音量增益 (dB，空=配置默认)</span>
+              <input id="gain" type="number" step="1" placeholder="例如 -6" />
+            </label>
+            <label class="field">
+              <span>中文音量增益 (dB，空=配置默认)</span>
+              <input id="nativeGain" type="number" step="1" placeholder="例如 -11" />
+            </label>
+          </div>
         </div>
 
         <details class="options nested">
@@ -261,6 +267,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260731-spoken-q-rate-1"></script>
+  <script src="/static/app.js?v=20260818-native-gain-1"></script>
 </body>
 </html>

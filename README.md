@@ -406,7 +406,8 @@ can all override the repeat counts and output layout.
 | Flag | Default | Description |
 |---|---|---|
 | `--gain` | `0` | Fixed dB gain applied to every TTS clip (e.g., `-6` to reduce, `+3` to boost) |
-| `--normalize` | — | Normalize each TTS clip to this dBFS level (e.g., `-20`). Overrides `--gain` when set |
+| `--native-gain` | `-11` | Fixed dB gain for the Chinese (native) clips only — replaces `--gain` for them |
+| `--normalize` | — | Normalize each TTS clip to this dBFS level (e.g., `-20`). Overrides both gains when set |
 
 ### LRC / Text Parsing Overrides
 
@@ -490,7 +491,8 @@ tts:
 
   # --- Volume control (applies to all engines) ---
   gain: -6              # fixed dB adjustment (0 = no change)
-  normalize:            # target dBFS (e.g., -20). Overrides gain when set.
+  native_gain: -11      # Chinese clips only; empty = follow gain
+  normalize:            # target dBFS (e.g., -20). Overrides both gains when set.
 
 output:
   format: "m4a"
@@ -670,6 +672,9 @@ python main.py --text math.txt \
 # Reduce TTS volume by 6 dB
 python main.py --text phrases.txt --gain -6
 
+# Reduce only the Chinese narration by 11 dB (the default)
+python main.py --text phrases.txt --native-gain -11
+
 # Normalize all TTS clips to -20 dBFS
 python main.py --text phrases.txt --normalize -20
 ```
@@ -717,12 +722,17 @@ python main.py --text phrases.txt --gain -6    # quieter
 python main.py --text phrases.txt --gain 3     # louder
 ```
 
+The Chinese (native) narration has its own gain, `tts.native_gain` / `--native-gain`,
+because it comes out louder than the target-language audio. It defaults to `-11` dB and
+replaces `gain` for those clips; leave it empty to make the Chinese clips follow `gain`
+like everything else. In the web UI it is the 「中文音量增益」 box.
+
 **Normalization** — scale each clip individually so its average loudness hits a target dBFS. Overrides `--gain` when both are set:
 ```bash
 python main.py --text phrases.txt --normalize -20
 ```
 
-Typical spoken audio sits around -18 to -24 dBFS. Set in config as `tts.gain` and `tts.normalize`.
+Typical spoken audio sits around -18 to -24 dBFS. Set in config as `tts.gain`, `tts.native_gain`, and `tts.normalize`.
 
 ---
 

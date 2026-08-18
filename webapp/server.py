@@ -113,6 +113,7 @@ class JobRequest(BaseModel):
     loop: LoopOptions | None = None
     timing: TimingOptions | None = None
     gain: float | None = None
+    native_gain: float | None = Field(None, description="gain for the Chinese narration only (dB)")
     title: str | None = None
 
 
@@ -208,6 +209,7 @@ def _ui_config_defaults() -> dict:
         },
         "tts": {
             "gain": tts.get("gain", 0),
+            "native_gain": tts.get("native_gain"),
             "normalize": tts.get("normalize"),
             "target_rate": tts.get("target_rate"),
         },
