@@ -162,6 +162,17 @@ You supply a plain text file with bilingual entries. Both target and native audi
 phrases.txt  →  phrases_echo.m4a + phrases_echo.lrc
 ```
 
+#### TTS / LRC alignment invariant
+
+Final subtitle segmentation happens **before** synthesis. Every subtitle entry maps to exactly one
+target-language audio clip and one native-language clip, and LRC positions are accumulated from the
+decoded duration of those real clips. Never synthesize a multi-sentence paragraph and then estimate
+sentence boundaries from character count, word count, or average speaking rate.
+
+Hybrid recordings follow the same rule: an original-audio segment uses its measured extracted length;
+a generated segment uses one TTS clip per final subtitle line. If exact per-segment timing is not
+available, generation must fail instead of falling back to proportional timing.
+
 ### Batch Mode
 
 You point at a folder. The scanner finds all audio+LRC pairs and/or text files and processes them one by one. Output files are written to the same folder with an `_echo` suffix.

@@ -14,3 +14,4 @@
 __pycache__/
 *.pyc
 python-3.12-slim.tar.gz
+config.yaml.bak-safie
