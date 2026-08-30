@@ -29,7 +29,12 @@ FRAME_MS = 10
 SPEECH_WINDOW_MS = 2000   # 局部语音电平的窗口；用局部值而不是全局阈值，
                           # 因为一整条音频里的说话音量并不均匀
 SPEECH_REL_DB = 25        # 低于局部峰值这么多算静音
+HEAD_PAD_MS = 200         # 第一个有声帧之前留这么多，别削掉起音（清辅音是从
+                          # 几乎无声爬上来的，起点定在能量跃起处就已经晚了）
 TAIL_PAD_MS = 200         # 最后一个有声帧之后再留这么多，让尾音收干净
+MAX_HEAD_EXTEND_MS = 400  # 最多允许往回退多少。退不到静音就不动 —— 那说明这一行
+                          # 和上一行是连着说的，往回退只会把上一个词的尾巴拖进来。
+                          # 实测无条件往前加留量会让指标从 34.9% 恶化到 52%。
 MAX_TAIL_EXTEND_MS = 400  # 最多允许越过下一行起点多少。没有这个上限，
                           # 连着说的一长串里这一句会一路吞掉下一句。
                           # 400 的依据：日语素材里边界落在语音中的 41 句，
@@ -94,6 +99,47 @@ def speech_mask(audio: AudioSegment) -> np.ndarray:
     return (db > local_peak - SPEECH_REL_DB) & (local_peak > -55)
 
 
+def resolve_start_ms(mask: np.ndarray, start_ms: int, boundary_ms: int) -> int:
+    """算出一段的真实开始时间：本段第一个有声帧 − HEAD_PAD_MS。
+
+    和 resolve_end_ms 是镜像：
+    起点落在语音里 -> 往回退到这段语流的开头（受 MAX_HEAD_EXTEND_MS 限制，
+    退不到就不动，说明和上一行连着说）；
+    起点落在静音里 -> 往后找第一个有声帧，把开头多余的空转剪掉。
+    """
+    n = len(mask)
+    if n == 0:
+        return start_ms
+
+    f = min(n - 1, max(1, start_ms // FRAME_MS))
+    hi = min(n - 1, max(f, boundary_ms // FRAME_MS))
+
+    if mask[f] or mask[f - 1]:
+        lo = max(0, f - MAX_HEAD_EXTEND_MS // FRAME_MS)
+        i = f if mask[f] else f - 1
+        while i > lo and mask[i - 1]:
+            i -= 1
+        if i <= lo:              # 退到上限还没出语音 -> 连着说的，不动
+            return start_ms
+        first_audible = i
+    else:
+        i = f
+        while i < hi and not mask[i]:
+            i += 1
+        if not mask[i]:          # 整段都没有声音，不动
+            return start_ms
+        first_audible = i
+
+    # 留量只吃静音：碰到上一句的声音就停。否则这一段会把邻句的片段带进来 ——
+    # 和「无条件加前置留量」是同一个毛病，只是轻一些。
+    i = first_audible
+    budget = HEAD_PAD_MS // FRAME_MS
+    while i > 0 and budget > 0 and not mask[i - 1]:
+        i -= 1
+        budget -= 1
+    return max(0, i * FRAME_MS)
+
+
 def resolve_end_ms(mask: np.ndarray, start_ms: int, boundary_ms: int) -> int:
     """算出一段的真实结束时间：本段最后一个有声帧 + TAIL_PAD_MS。
 
@@ -122,7 +168,13 @@ def resolve_end_ms(mask: np.ndarray, start_ms: int, boundary_ms: int) -> int:
             return boundary_ms + TAIL_PAD_MS
         last_audible = i
 
-    return (last_audible + 1) * FRAME_MS + TAIL_PAD_MS
+    # 同上：留量只吃静音，不越过下一句的起音
+    i = last_audible + 1
+    budget = TAIL_PAD_MS // FRAME_MS
+    while i < n and budget > 0 and not mask[i]:
+        i += 1
+        budget -= 1
+    return i * FRAME_MS
 
 
 def extract_segment(
@@ -136,7 +188,7 @@ def extract_segment(
     Args:
         audio: The full source AudioSegment
         segment: A Segment object with start_ms and end_ms
-        mask: 可选的语音掩码（见 speech_mask）。给了就逐句重算结束时间；
+        mask: 可选的语音掩码（见 speech_mask）。给了就逐句重算起止时间；
               不给就按 LRC 原样切，保持旧行为。
 
     Returns:
@@ -145,7 +197,8 @@ def extract_segment(
     start = max(0, segment.start_ms)
     end = segment.end_ms
     if mask is not None and len(mask):
-        end = resolve_end_ms(mask, start, segment.end_ms)
+        start = max(0, resolve_start_ms(mask, start, segment.end_ms))
+        end = resolve_end_ms(mask, segment.start_ms, segment.end_ms)
     # 结束时间只能往后挪到源音频的尽头，且必须晚于开始
     end = min(len(audio), end)
     if end <= start:
@@ -165,7 +218,7 @@ def extract_all_segments(
     Args:
         audio: The full source AudioSegment
         segments: List of Segment objects
-        trim_tail: 逐句从音频量结束时间（默认开）。掩码只算一次，全部段共用。
+        trim_tail: 逐句从音频量起止时间（默认开）。掩码只算一次，全部段共用。
 
     Returns:
         List of extracted AudioSegments in the same order
