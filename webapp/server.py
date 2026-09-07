@@ -101,7 +101,7 @@ class JobRequest(BaseModel):
     mode: str = Field(..., description="text | interview")
     content: str
     name: str | None = Field(None, description="required; drives file name + sync folder")
-    dual: bool | None = Field(None, description="generate EN + JA audio from one trilingual script (text or interview mode)")
+    dual: bool | None = Field(None, description="generate EN + JA audio from one EN|||JA|||ZH-for-EN|||ZH-for-JA script (text or interview mode; three-column EN|||JA|||ZH still accepted)")
     lang: str | None = None
     engine: str | None = None
     voice: str | None = Field(None, description="text mode: Google Chirp3-HD persona for the target voice")
