@@ -14,9 +14,12 @@ Example (delimiter = "-"):
 Lines starting with # are comments. Blank lines are ignored.
 """
 
+import logging
 from pathlib import Path
 
 from parser.lrc_parser import Segment, _split_bilingual
+
+logger = logging.getLogger(__name__)
 
 
 def parse_text(
@@ -46,7 +49,7 @@ def parse_text(
     segments: list[Segment] = []
 
     with open(text_path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_no, line in enumerate(f, 1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -56,6 +59,14 @@ def parse_text(
             )
 
             if not target_text or not native_text:
+                # A lecture section title that lost its leading "#" (chat UIs
+                # render "# ..." as a heading and drop the marker on copy)
+                # lands here. Skipping is right, but say so — a content line
+                # missing its delimiter must not vanish silently.
+                logger.warning(
+                    "%s line %d has no %r delimiter, skipped: %s",
+                    text_path.name, line_no, delimiter, line[:60],
+                )
                 continue
 
             segments.append(

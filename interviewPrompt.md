@@ -26,7 +26,8 @@ Rules:
 - Avoid idioms, rhetorical flourishes, and inflated words such as spearheaded, leveraged, mission-critical, cutting-edge, world-class, or seamlessly.
 - Term consistency: use one word for one concept throughout the whole script, at most two, and never rotate synonyms to avoid repetition. Native speakers repeat. For example always use (not utilize / employ), keep (not retain / preserve / maintain), improve (not enhance / refine), start (not initiate / launch).
 - Non-technical vocabulary stays within the 2000 most common English words (NGSL). Technical terms and everyday engineering words are exempt, but each of them also gets one spelling throughout.
-- Before output, list the verbs and nouns you used; if one concept has a third wording, merge it into the first.
+- The Chinese column follows the same rule: one Chinese rendering per term for the whole script, and two different terms never share one Chinese word (replica is always 副本 and copy is 拷贝, never both 副本; partition is 分区 and shard is 分片; cache is 缓存 and buffer is 缓冲).
+- Before output, list the verbs, nouns, and Chinese term renderings you used; if one concept has a third wording, merge it into the first, and if two terms collide on one Chinese word, rename the second.
 - The Chinese translation follows the English clause by clause: keep the clause order, the position of contrast and negation words, and quantifiers (a / one / another) as in the English. Do not reorder, merge, or split clauses even if the Chinese sounds slightly stiff. It must contain the same information as the English and add nothing.
 - Do not add bullets, numbering, headings, markdown, blank lines, or explanations outside the Q:/A: lines.
 - Do not use the delimiter ||| anywhere except between the target text and translation.
