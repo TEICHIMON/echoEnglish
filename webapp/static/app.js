@@ -307,17 +307,19 @@ function langWord() {
 // Count shown in the copy-prompt helper. Each interview flavor remembers its
 // own value; a chat transcript usually contains fewer distinct topics than a
 // full mock interview, so discussion starts at 12 instead of 24.
-const promptCounts = { text: 15, general: 24, sysdesign: 24, discussion: 12 };
+// A lecture counts sections (10–20 lines each), not sentences: 6 sections is
+// one chapter told end to end, about 60–120 lines.
+const promptCounts = { sentences: 15, lecture: 6, general: 24, sysdesign: 24, discussion: 12 };
 
 function promptCountKey(mode) {
-  return mode === "interview" ? interviewStyle() : "text";
+  return mode === "interview" ? interviewStyle() : textStyle();
 }
 
 function promptCount(mode) {
   const key = promptCountKey(mode);
   const n = parseInt(promptCounts[key], 10);
   if (Number.isFinite(n) && n > 0) return n;
-  return key === "discussion" ? 12 : key === "text" ? 15 : 24;
+  return key === "discussion" ? 12 : key === "sentences" ? 15 : key === "lecture" ? 6 : 24;
 }
 
 function syncPromptCountUI() {
@@ -328,10 +330,13 @@ function syncPromptCountUI() {
       ? "目标问题数量（素材不足时宁少勿编）"
       : "问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）";
   } else {
-    label.textContent = "句子数量";
+    label.textContent = textStyle() === "lecture"
+      ? "小节数量（每小节 10-20 行；建议 4-8 节，一章讲完）"
+      : "句子数量";
   }
   input.value = promptCounts[promptCountKey(currentMode)];
   $("interviewStyleField").classList.toggle("hidden", currentMode !== "interview");
+  $("textStyleField").classList.toggle("hidden", currentMode !== "text");
   // Spoken-Q only makes sense when a script is being written from scratch — in
   // 聊天整理 the questions come from a real transcript, not from the model.
   $("spokenQField").classList.toggle(
@@ -339,7 +344,15 @@ function syncPromptCountUI() {
   );
   $("promptHelp").textContent = currentMode === "interview" && interviewStyle() === "discussion"
     ? "把下面提示词直接发在原技术会话末尾；如果要在新会话中使用，请把聊天记录粘到提示词末尾。整理结果可以直接粘到下面输入框。"
+    : currentMode === "text" && textStyle() === "lecture"
+    ? "复制下面提示词，发给 ChatGPT / Claude，填上章节主题（可以把教材、文章或网页内容一起贴在后面当素材），把生成的讲课稿直接粘到下面输入框。讲完一章再用「面试稿 → 聊天整理」把它整理成问答，两边用词就是同一套。"
     : "复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」、「目标语言」以及下面的数量自动调整。";
+}
+
+// Text prompt flavor: independent sentences, or one continuous lecture.
+function textStyle() {
+  const selected = document.querySelector('input[name="textStyle"]:checked');
+  return selected ? selected.value : "sentences";
 }
 
 // Interview prompt flavor: general Q&A, scenario-driven system design (FDE),
@@ -578,6 +591,11 @@ function buildPrompt(mode) {
       discussion ? `【聊天记录（在原会话中使用可留空；在新会话中请粘贴到这里）】` : null,
     ].filter((line) => line !== null).join("\n");
   }
+  if (textStyle() === "lecture") {
+    return buildLecturePrompt(isDual(), L, langCode, {
+      zhAlignDual, zhAlignSingle, vocabSection, jaFuriganaRule, jaNaturalRule, acronymRule,
+    });
+  }
   if (isDual()) {
     return [
       `你是 Echo Loop 跟读训练材料生成助手。请围绕我给的主题，生成适合 TTS 朗读、复听和跟读的「英语 + 日语 + 中文」三语短句。`,
@@ -633,30 +651,108 @@ function buildPrompt(mode) {
   ].filter((line) => line !== null).join("\n");
 }
 
+// One continuous lecture instead of independent lines. Q&A fragments a topic
+// into retrieval cues; a lecture builds the mental model those cues need —
+// real-life problem first, then concept, mechanism, why, trade-offs, edges,
+// with analogies mapped back to the term and a recap in the same words. The
+// line format is unchanged (text mode eats it as-is); coherence comes from
+// discourse markers between lines and `#` section comments the parser skips.
+function buildLecturePrompt(dual, L, langCode, rules) {
+  const sections = promptCount("text");
+  const columns = dual
+    ? "英语|||日语|||中文(对英)|||中文(对日)"
+    : `${L}|||简体中文`;
+  const intro = dual
+    ? `你是 Echo Loop 跟读训练材料生成助手，同时也是一位擅长把复杂技术讲明白的老师。请围绕我给的主题，写一段适合 TTS 朗读、复听和跟读的「英语 + 日语 + 中文」三语讲课稿：像老师在讲台上讲一个章节，由浅入深、循序渐进，用现实生活的例子把机制讲透。`
+    : `你是 Echo Loop 跟读训练材料生成助手，同时也是一位擅长把复杂技术讲明白的老师。请围绕我给的主题，写一段适合 TTS 朗读、复听和跟读的${L}讲课稿（配简体中文对照）：像老师在讲台上讲一个章节，由浅入深、循序渐进，用现实生活的例子把机制讲透。`;
+  const formatLine = dual
+    ? `<英语句子>|||<日语句子>|||<贴着英语语序的简体中文>|||<贴着日语语序的简体中文>`
+    : `<${L}句子>|||<贴着${L}语序的简体中文>`;
+  const titleExample = dual
+    ? `Now let's look at how Redis writes data to disk. / では、Redis がデータをディスクにどう書（か）くかを見（み）ていきましょう。`
+    : langCode === "ja"
+    ? `では、Redis がデータをディスクにどう書（か）くかを見（み）ていきましょう。`
+    : `Now let's look at how Redis writes data to disk.`;
+  const markers = dual
+    ? `英语 so / now / for example / that's why / in other words / but here's the problem；日语 では / つまり / たとえば / だから / でも、ここで問題（もんだい）があります`
+    : langCode === "ja"
+    ? `では / つまり / たとえば / だから / でも、ここで問題（もんだい）があります`
+    : `so / now / for example / that's why / in other words / but here's the problem`;
+  const lengthRule = dual
+    ? `- 每句英语通常 8-16 个词，必要时最多 18 个词；日语约 8-36 个字符；一句一个主旨，可以带一个表示原因、条件、时间或转折的简单从句，不要嵌套从句或长连体修饰`
+    : langCode === "ja"
+    ? `- 每句日语约 8-36 个字符；一句一个主旨，可以带一个表示原因、条件、时间或转折的简短表达，不要嵌套从句或长连体修饰`
+    : `- 每句英语通常 8-16 个词，必要时最多 18 个词；一句一个主旨，可以带一个表示原因、条件、时间或转折的简单从句，不要嵌套从句或长关系从句`;
+  return [
+    intro,
+    ``,
+    `主题/章节：【在这里填，例如：Redis 的持久化机制；可以把教材、文章或网页内容贴在本指令末尾作为素材】`,
+    `小节数量：${sections}（每小节 10-20 行，整篇约 ${sections * 10}-${sections * 20} 行，把这一章讲完）`,
+    ``,
+    `严格按以下格式输出，每行一条：`,
+    formatLine,
+    ``,
+    `讲课结构（核心要求）：`,
+    `- 这是一条连续的叙事，不是知识点清单，也不是问答：每一句都接着上一句说，后面的内容踩在前面已经讲过的内容上`,
+    `- 开头用一个现实生活里的问题或场景引入，先让人明白「为什么需要这个东西」，再引出概念`,
+    `- 主线按「现实问题 → 概念 → 机制怎么运作 → 为什么这样设计 → 取舍与代价 → 边界和失败场景」推进；每个小节只往前推一步，不要在一节里塞两个概念`,
+    `- 每个小节的第一行是一句口语化的小节引入（如 ${titleExample}），最后一到两行用同样的词把这一节的要点复述一遍`,
+    `- 整篇最后一个小节是回顾：用前面用过的原词，把这一章讲了什么按顺序再说一遍`,
+    `- 用现实生活的类比讲机制：类比先出场（便签和档案柜、邮局的多个窗口、餐厅的点单本这类），紧接着用一句话把类比明确映射回技术术语；类比是帮助理解的桥，不能代替对机制本身的解释`,
+    `- 用话语标记把句子串起来，让听的人随时知道讲到哪一步：${markers}`,
+    `- 内容要资深：讲到取舍、数字、失败场景和生产经验，语言保持简单；如果我附了素材，以素材为准，不要编造素材里没有的事实`,
+    ``,
+    `语域红线（非母语跟读材料——逐条遵守）：`,
+    `- 这些句子是给非母语者逐句跟读的：写「非母语者也能顺口说出来的句子」，不是播音稿；语言简单 ≠ 内容初级`,
+    lengthRule,
+    `- 词汇用最常用的高频词 + 真实技术术语（Redis、Kafka、JWT、API 这类照留）；禁止习语、谚语和书面修辞`,
+    `- 禁用包装词：spearheaded、leveraged、mission-critical、cutting-edge、world-class、seamlessly、state-of-the-art`,
+    ...rules.vocabSection(dual),
+    ``,
+    `格式与朗读要求：`,
+    dual
+      ? `- 分隔符必须是三个竖线 |||，顺序固定为 ${columns}，共四列`
+      : `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
+    dual ? `- 英语和日语互为翻译，两列中文与它们同义` : null,
+    `- 每行一个完整句子，必须独占一行，不要换行续写`,
+    `- ${dual ? "英语、日语都要" : `${L}要`}口语化、节奏清楚，像在讲话，不是在念书`,
+    dual || langCode === "ja" ? rules.jaFuriganaRule : null,
+    dual || langCode === "ja" ? rules.jaNaturalRule : null,
+    rules.acronymRule,
+    dual ? rules.zhAlignDual : rules.zhAlignSingle,
+    `- 小节之间用一行 # 开头的注释标出小节序号和中文标题（如 # 1. 为什么需要缓存）；这一行不会被朗读，只是给我看的`,
+    `- 任意一列内部都不能再出现 |||`,
+    `- 除了 # 小节注释，只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
+  ].filter((line) => line !== null).join("\n");
+}
+
 function updatePrompt() {
   $("promptText").textContent = buildPrompt(currentMode);
 }
 
 $("lang").addEventListener("change", updatePrompt);
-const interviewStyleInputs = [...document.querySelectorAll('input[name="interviewStyle"]')];
-interviewStyleInputs.forEach((input, index) => {
-  input.addEventListener("change", () => {
-    syncPromptCountUI();
-    updatePrompt();
+function bindStyleRadios(name) {
+  const inputs = [...document.querySelectorAll(`input[name="${name}"]`)];
+  inputs.forEach((input, index) => {
+    input.addEventListener("change", () => {
+      syncPromptCountUI();
+      updatePrompt();
+    });
+    input.addEventListener("keydown", (event) => {
+      const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
+      const forwards = event.key === "ArrowRight" || event.key === "ArrowDown";
+      if (!backwards && !forwards) return;
+      event.preventDefault();
+      const offset = backwards ? -1 : 1;
+      const next = inputs[(index + offset + inputs.length) % inputs.length];
+      next.checked = true;
+      next.focus();
+      next.dispatchEvent(new Event("change", { bubbles: true }));
+    });
   });
-  input.addEventListener("keydown", (event) => {
-    const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
-    const forwards = event.key === "ArrowRight" || event.key === "ArrowDown";
-    if (!backwards && !forwards) return;
-    event.preventDefault();
-    const offset = backwards ? -1 : 1;
-    const nextIndex = (index + offset + interviewStyleInputs.length) % interviewStyleInputs.length;
-    const next = interviewStyleInputs[nextIndex];
-    next.checked = true;
-    next.focus();
-    next.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-});
+}
+bindStyleRadios("interviewStyle");
+bindStyleRadios("textStyle");
 $("spokenQ").addEventListener("change", updatePrompt);
 $("promptCount").addEventListener("input", () => {
   promptCounts[promptCountKey(currentMode)] = $("promptCount").value;
