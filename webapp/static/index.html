@@ -9,7 +9,7 @@
   <script>try{if(localStorage.getItem("echoTheme")==="dark")document.documentElement.dataset.theme="dark";}catch(e){}</script>
   <!-- Keep the query version in sync for CSS/JS releases so a newly deployed
        HTML shell can never run against stale cached assets. -->
-  <link rel="stylesheet" href="/static/style.css?v=20260907-lecture-1" />
+  <link rel="stylesheet" href="/static/style.css?v=20260907-lecture-2" />
 </head>
 <body>
   <main class="app">
@@ -96,7 +96,7 @@
           <span>面试官问题用真实口语（听力难度：小句连缀、句尾省略、填充词；回答仍是干净短句）</span>
         </label>
 
-        <label class="field prompt-count">
+        <label class="field prompt-count" id="promptCountField">
           <span id="promptCountLabel">问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）</span>
           <input id="promptCount" type="number" min="1" max="60" value="24" inputmode="numeric" />
         </label>
@@ -290,6 +290,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260907-lecture-1"></script>
+  <script src="/static/app.js?v=20260907-lecture-2"></script>
 </body>
 </html>
