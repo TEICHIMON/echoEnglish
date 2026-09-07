@@ -397,8 +397,18 @@ function buildPrompt(mode) {
   const zhAlignSingle = `- 中文翻译逐句贴着${L}写：分句顺序、转折词和否定词的位置、量词都跟原文走，不调换分句、不合并、不拆分，宁可中文略显生硬也不按中文习惯重排；完整对应原文信息，不要额外扩写原文没有的内容`;
   // Synonym rotation is the model's default and the learner's enemy: three
   // words for one idea are three things to remember. Native speakers repeat.
-  const enVocabRule = `- 英语固定用 use（不用 utilize / employ）、keep（不用 retain / preserve / maintain）、improve（不用 enhance / refine）、start（不用 initiate / launch）；非术语部分限在最常用的 2000 词（NGSL）以内`;
-  const jaVocabRule = `- 日语固定用 使う（不用 利用する / 活用する）、保つ（不用 保持する / 維持する）、確認する（不用 検証する / 点検する）；非术语部分限在 JLPT N3 以内`;
+  // The EN cap deliberately does NOT get the JA loosening: JLPT levels are an
+  // exam ladder, so a hard N3 line cuts through everyday spoken words, while
+  // the top 2000 English words already cover ~95% of speech — hitting that cap
+  // means reaching for a phrasal verb, not a bigger word. Raising it only lets
+  // the Latinate register (utilize / leverage / facilitate) back in. What the
+  // English side actually lacks is the collocation layer, so ask for that.
+  const enVocabRule = `- 英语固定用 use（不用 utilize / employ）、keep（不用 retain / preserve / maintain）、improve（不用 enhance / refine）、start（不用 initiate / launch）；非术语部分限在最常用的 2000 词（NGSL）以内；优先用常见词组成的短语动词和自然搭配（roll out、spin up、end up、take over、come up with、fall back on），不要用一个更「高级」的单词去代替 —— 宁可两个常见词，也不要一个大词`;
+  // The cap is a centre of gravity, not a ceiling: a hard N3 line makes the
+  // model circle around a natural N2 word in N3 phrases, which loses to the
+  // "natural spoken Japanese" rule. Written as "N2 以内" it would write to the
+  // top of the range instead.
+  const jaVocabRule = `- 日语固定用 使う（不用 利用する / 活用する）、保つ（不用 保持する / 維持する）、確認する（不用 検証する / 点検する）；非术语部分以 JLPT N3 高频词为主，需要时可以用 N2 的常用词（尤其是连接和抽象表达，如 一方で、そのため、〜に応じて、前提、手間），不要用 N1 生僻词和书面语；宁可用一个自然的 N2 词，也不要为了压在 N3 里绕着说`;
   const vocabSection = (dual) => [
     ``,
     `用词一致（重要——学习者要记得住，不是要文采）：`,
