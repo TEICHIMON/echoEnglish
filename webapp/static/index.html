@@ -9,7 +9,7 @@
   <script>try{if(localStorage.getItem("echoTheme")==="dark")document.documentElement.dataset.theme="dark";}catch(e){}</script>
   <!-- Keep the query version in sync for CSS/JS releases so a newly deployed
        HTML shell can never run against stale cached assets. -->
-  <link rel="stylesheet" href="/static/style.css?v=20260818-native-gain-1" />
+  <link rel="stylesheet" href="/static/style.css?v=20260907-lecture-1" />
 </head>
 <body>
   <main class="app">
@@ -61,6 +61,29 @@
               <span class="style-card-body">
                 <span class="style-card-title">聊天整理</span>
                 <span class="style-card-description">把技术讨论忠实整理成面试问答</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+        <!-- Text-tab flavor. 短句 = independent sentences around a topic (the
+             original text prompt). 讲课 = one continuous lecture that builds a
+             mental model — Q&A is retrieval practice and fragments the topic,
+             which is the wrong tool when the model isn't built yet. -->
+        <fieldset class="interview-style" id="textStyleField">
+          <legend>文本类型</legend>
+          <div class="interview-style-options two">
+            <label class="style-card">
+              <input type="radio" name="textStyle" value="sentences" checked />
+              <span class="style-card-body">
+                <span class="style-card-title">短句练习</span>
+                <span class="style-card-description">围绕主题的独立短句</span>
+              </span>
+            </label>
+            <label class="style-card">
+              <input type="radio" name="textStyle" value="lecture" />
+              <span class="style-card-body">
+                <span class="style-card-title">讲课</span>
+                <span class="style-card-description">像老师讲一章：由浅入深、生活类比、连续叙事</span>
               </span>
             </label>
           </div>
@@ -267,6 +290,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260818-native-gain-1"></script>
+  <script src="/static/app.js?v=20260907-lecture-1"></script>
 </body>
 </html>
