@@ -4,9 +4,9 @@ Target language: English
 Native translation language: Chinese
 
 Output format must be exactly:
-Q:<one short interviewer question>|||<natural Chinese translation>
-A:<one short answer chunk>|||<natural Chinese translation>
-A:<optional next short answer chunk>|||<natural Chinese translation>
+Q:<one short interviewer question>|||<Chinese translation aligned to the English>
+A:<one short answer chunk>|||<Chinese translation aligned to the English>
+A:<optional next short answer chunk>|||<Chinese translation aligned to the English>
 
 Rules:
 - Use only Q: and A: prefixes.
@@ -24,7 +24,10 @@ Rules:
 - Use practical workplace vocabulary.
 - Preserve technical terms like replay, backfill, API, cache, database, deployment, observability, and incident response when appropriate.
 - Avoid idioms, rhetorical flourishes, and inflated words such as spearheaded, leveraged, mission-critical, cutting-edge, world-class, or seamlessly.
-- The Chinese translation should be natural and must contain the same information as the English. Do not add explanations that are absent from the English.
+- Term consistency: use one word for one concept throughout the whole script, at most two, and never rotate synonyms to avoid repetition. Native speakers repeat. For example always use (not utilize / employ), keep (not retain / preserve / maintain), improve (not enhance / refine), start (not initiate / launch).
+- Non-technical vocabulary stays within the 2000 most common English words (NGSL). Technical terms and everyday engineering words are exempt, but each of them also gets one spelling throughout.
+- Before output, list the verbs and nouns you used; if one concept has a third wording, merge it into the first.
+- The Chinese translation follows the English clause by clause: keep the clause order, the position of contrast and negation words, and quantifiers (a / one / another) as in the English. Do not reorder, merge, or split clauses even if the Chinese sounds slightly stiff. It must contain the same information as the English and add nothing.
 - Do not add bullets, numbering, headings, markdown, blank lines, or explanations outside the Q:/A: lines.
 - Do not use the delimiter ||| anywhere except between the target text and translation.
 

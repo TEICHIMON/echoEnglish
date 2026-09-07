@@ -8,7 +8,10 @@ Wraps the existing CLI pipeline. Each submitted job:
   3. Calls ``run_text_mode`` / ``run_interview_mode`` from ``main.py`` — the same
      code path the CLI uses, so output lands in the job folder with a ``_tst``
      (or ``_tnt``/``_echo``) suffix. A dual (EN+JA) text job runs the pipeline
-     twice from a trilingual script, emitting ``<slug>_en_*`` and ``<slug>_ja_*``.
+     twice from a multilingual script, emitting ``<slug>_en_*`` and ``<slug>_ja_*``.
+     The script is ``EN|||JA|||ZH-for-EN|||ZH-for-JA`` (four columns: each
+     language gets a Chinese line whose clause order follows it), or the older
+     three-column ``EN|||JA|||ZH`` where one Chinese line serves both.
 
 A single background worker thread drains a FIFO queue. Running jobs serially is
 deliberate: the pipeline relies on global folder-log handlers
@@ -73,6 +76,54 @@ AUDIO_EXTS = (".m4a", ".mp3", ".wav", ".flac", ".ogg", ".aac")
 
 # Characters unsafe in file names / rclone remote paths.
 _SLUG_STRIP = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+def split_multilingual_script(raw: str, interview: bool = False) -> tuple[list[str], list[str], bool]:
+    """Split a pasted EN+JA script into the two bilingual files the pipeline eats.
+
+    Accepted line shapes (``|||``-separated, surrounding whitespace ignored):
+
+    * four columns ``EN|||JA|||ZH-for-EN|||ZH-for-JA`` — the current format.
+      Chinese is written twice on purpose: English and Japanese put their
+      clauses in different orders (JA is SOV and hangs its contrast on the
+      sentence end), so one Chinese line cannot follow both. Each language
+      gets a Chinese line whose clause order tracks *it*.
+    * three columns ``EN|||JA|||ZH`` — the older format; the single Chinese
+      line is reused for both languages.
+
+    Blank lines, ``#`` comments and lines with fewer than three columns are
+    passed through unchanged to both outputs. In interview mode a leading
+    role marker (``Q:`` / ``A:`` …) on the English column is copied onto the
+    Japanese line so the interview parser still sees the role there.
+
+    Returns ``(en_lines, ja_lines, found)`` where ``found`` says whether at
+    least one multilingual line was seen.
+    """
+    en_lines: list[str] = []
+    ja_lines: list[str] = []
+    found = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            en_lines.append(line)
+            ja_lines.append(line)
+            continue
+        parts = [p.strip() for p in stripped.split("|||")]
+        if len(parts) >= 3 and all(parts[:3]):
+            en, ja = parts[0], parts[1]
+            zh_en = parts[2]
+            zh_ja = parts[3] if len(parts) >= 4 and parts[3] else zh_en
+            if interview:
+                match = _ROLE_PREFIX.match(en)
+                if match:
+                    ja = f"{match.group(1)}{ja}"
+            en_lines.append(f"{en}|||{zh_en}")
+            ja_lines.append(f"{ja}|||{zh_ja}")
+            found = True
+        else:
+            en_lines.append(line)
+            ja_lines.append(line)
+    return en_lines, ja_lines, found
 
 
 def _slugify(name: str) -> str:
@@ -458,17 +509,14 @@ class JobManager:
     def _run_dual(
         self, job: Job, base_config: dict, input_path: Path, slug: str, mode: str = "text"
     ) -> None:
-        """Generate both English and Japanese audio from one trilingual script.
+        """Generate both English and Japanese audio from one multilingual script.
 
-        Input lines are ``English|||Japanese|||Chinese``. Each is split into two
-        2-column files — ``<slug>_en.txt`` (en|||zh) and ``<slug>_ja.txt``
-        (ja|||zh) — and the pipeline for ``mode`` runs once per language with that
-        language's voice preset applied. If no trilingual line is found we fall
-        back to a single run on the original content.
-
-        In interview mode the input is ``Q:en|||ja|||zh``; the leading role
-        marker (``Q:`` / ``A:`` …) is preserved on BOTH single-language files so
-        the interview parser still recognises the role on the Japanese side.
+        Input lines are ``English|||Japanese|||Chinese-for-English|||Chinese-for-Japanese``
+        (or the older three-column form; see :func:`split_multilingual_script`).
+        Each is split into two 2-column files — ``<slug>_en.txt`` (en|||zh) and
+        ``<slug>_ja.txt`` (ja|||zh) — and the pipeline for ``mode`` runs once per
+        language with that language's voice preset applied. If no multilingual
+        line is found we fall back to a single run on the original content.
         """
         interview = mode == "interview"
         runner = run_interview_mode if interview else run_text_mode
@@ -478,30 +526,7 @@ class JobManager:
         path_key = "interview" if interview else "text"
 
         raw = input_path.read_text(encoding="utf-8")
-        en_lines: list[str] = []
-        ja_lines: list[str] = []
-        found = False
-        for line in raw.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                en_lines.append(line)
-                ja_lines.append(line)
-                continue
-            parts = [p.strip() for p in stripped.split("|||")]
-            if len(parts) >= 3 and parts[0] and parts[1] and parts[2]:
-                en, ja, zh = parts[0], parts[1], parts[2]
-                if interview:
-                    # Keep the Q:/A: role marker on the Japanese line too.
-                    match = _ROLE_PREFIX.match(en)
-                    if match:
-                        ja = f"{match.group(1)}{ja}"
-                en_lines.append(f"{en}|||{zh}")
-                ja_lines.append(f"{ja}|||{zh}")
-                found = True
-            else:
-                # Not trilingual — pass the line through unchanged to both runs.
-                en_lines.append(line)
-                ja_lines.append(line)
+        en_lines, ja_lines, found = split_multilingual_script(raw, interview=interview)
 
         if not found:
             base_config["paths"][path_key] = str(input_path)

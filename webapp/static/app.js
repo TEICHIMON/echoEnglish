@@ -247,9 +247,9 @@ function updateDualUI() {
 function updateContentPlaceholders() {
   if (currentMode === "interview" && isDual()) {
     $("content").placeholder =
-      "Q:/A: 三语面试稿，每条用 ||| 分隔 英语|||日语|||中文。例如：\nQ:Tell me about yourself.|||自己紹介をお願いします。|||请介绍一下你自己。\nA:I am a backend engineer.|||バックエンドエンジニアです。|||我是一名后端工程师。";
+      "Q:/A: 三语面试稿，每条四列：英语|||日语|||中文(对英)|||中文(对日)。例如：\nQ:Tell me about yourself.|||自己紹介（じこしょうかい）をお願（ねが）いします。|||请介绍一下你自己。|||请做一下自我介绍。\nA:I can explain it if you want.|||必要（ひつよう）なら説明（せつめい）します。|||如果你想听，我可以解释。|||有需要的话，我来解释。";
     $("formatHint").innerHTML =
-      '格式：<code>Q:/A: 英语|||日语|||中文</code>，会同时生成英中、日中两个面试音频。支持 Q:/Question:/Interviewer: 与 A:/Answer:/Candidate:。';
+      '格式：<code>Q:/A: 英语|||日语|||中文(对英)|||中文(对日)</code>，两列中文各自贴着英语 / 日语的语序，会同时生成英中、日中两个面试音频；旧的三列 <code>英语|||日语|||中文</code> 也能用，两边共用一列中文。支持 Q:/Question:/Interviewer: 与 A:/Answer:/Candidate:。';
   } else if (currentMode === "interview") {
     $("content").placeholder =
       "Q:/A: 面试稿，每条同样用 ||| 分隔中文。例如：\nQ:Tell me about yourself.|||请介绍一下你自己。\nA:Sure, I am a backend engineer.|||当然，我是一名后端工程师。";
@@ -257,9 +257,9 @@ function updateContentPlaceholders() {
       '格式：<code>Q:/A: 目标语言|||中文</code>。支持 Q:/Question:/Interviewer: 与 A:/Answer:/Candidate:。';
   } else if (isDual()) {
     $("content").placeholder =
-      "每行一条：英语|||日语|||中文\n例如：\nI'd like to pay by card.|||カードで払いたいです。|||我想用卡支付。\nWhere is the fitting room?|||試着室はどこですか。|||试衣间在哪里？";
+      "每行一条：英语|||日语|||中文(对英)|||中文(对日)\n例如：\nI'll call you when I get home.|||家（いえ）に着（つ）いたら電話（でんわ）します。|||我会给你打电话，等我到家。|||到家了就打电话。\nI'd like to pay by card.|||カードで払（はら）いたいです。|||我想用卡支付。|||用卡支付，可以吗。";
     $("formatHint").innerHTML =
-      '格式：<code>英语|||日语|||中文</code>，每行一条，<code>#</code> 开头为注释。会同时生成英文和日文两个音频。';
+      '格式：<code>英语|||日语|||中文(对英)|||中文(对日)</code>，每行一条，两列中文各自贴着英语 / 日语的语序；<code>#</code> 开头为注释。会同时生成英文和日文两个音频。旧的三列 <code>英语|||日语|||中文</code> 也能用，两边共用一列中文。';
   } else {
     $("content").placeholder =
       "每行一条：目标语言|||中文翻译\n例如：\nこれはテストです|||这是一个测试\n水を飲みます|||我喝水";
@@ -369,6 +369,25 @@ function buildPrompt(mode) {
     : `${L} 日常购物对话`;
   const jaFuriganaRule = `- 日语汉字和数字都要注音：在汉字 / 数字后用全角括号标注平假名读音，如 漢字（かんじ）、2024年（にせんにじゅうよねん）；纯假名和片假名外来语（カタカナ）不用注`;
   const jaFuriganaSingle = langCode === "ja" ? jaFuriganaRule : null;
+  // Why two Chinese columns: English and Japanese order their clauses
+  // differently (JA is SOV and hangs contrast / negation on the sentence end),
+  // so one Chinese line translated from the English reads "off" against the
+  // Japanese audio. Echo relies on the native line lighting up the SAME
+  // position in the target line, so each language gets its own Chinese.
+  const zhAlignDual = `- 第三列中文逐句贴着英语写，第四列中文逐句贴着日语写：分句顺序、转折词和否定词的位置、量词（a / one / another、一つの / 別の）都跟各自的原文走，不调换分句、不合并、不拆分，宁可中文略显生硬也不按中文习惯重排；两列中文意思相同，只是语序各自贴合原文，都要完整对应原文信息，不要额外扩写原文没有的内容`;
+  const zhAlignSingle = `- 中文翻译逐句贴着${L}写：分句顺序、转折词和否定词的位置、量词都跟原文走，不调换分句、不合并、不拆分，宁可中文略显生硬也不按中文习惯重排；完整对应原文信息，不要额外扩写原文没有的内容`;
+  // Synonym rotation is the model's default and the learner's enemy: three
+  // words for one idea are three things to remember. Native speakers repeat.
+  const enVocabRule = `- 英语固定用 use（不用 utilize / employ）、keep（不用 retain / preserve / maintain）、improve（不用 enhance / refine）、start（不用 initiate / launch）；非术语部分限在最常用的 2000 词（NGSL）以内`;
+  const jaVocabRule = `- 日语固定用 使う（不用 利用する / 活用する）、保つ（不用 保持する / 維持する）、確認する（不用 検証する / 点検する）；非术语部分限在 JLPT N3 以内`;
+  const vocabSection = (dual) => [
+    ``,
+    `用词一致（重要——学习者要记得住，不是要文采）：`,
+    `- 同一个概念在整份稿子里固定用同一个词，最多两个说法，绝不为了避免重复换近义词；母语者说话本来就是重复的`,
+    ...(dual ? [enVocabRule, jaVocabRule] : [langCode === "ja" ? jaVocabRule : enVocabRule]),
+    `- 技术术语和工程师职场常用词（処理、保証、障害、実装、Kafka、JWT、replay 这类）不受词汇范围限制，照常使用，但同样全文只用一个说法`,
+    `- 输出前自检：把全文用过的动词和名词过一遍，同一概念出现第三种说法就统一成第一种，再输出`,
+  ];
   const acronymRule = `- 缩写词一律全大写，如 ID、API、SQL、URL、AWS，绝不要写成 id、api（小写会被 TTS 当成普通单词读错音）`;
   const jaNaturalRule = `- 日语必须是日本人日常会说的自然日语，严禁英日混杂：技术概念用日本工程师惯用的片假名或汉字说法（如 データベース、認証、負荷分散、排他制御），不要在日语句子里原样夹英文单词或英文短语；只有 ID、API、SQL 这类日本人口语中也直接使用的缩写可以保留`;
   const jaNaturalSingle = langCode === "ja" ? jaNaturalRule : null;
@@ -458,7 +477,7 @@ function buildPrompt(mode) {
         : [langCode === "ja" ? spokenQFeatures.ja : spokenQFeatures.en]),
       spokenQLength(dual),
       dual
-        ? `- 英语和日语各自用本语言自然的口语方式表达同一个意思，不要把填充词逐字对译；中文那一列必须干净完整、把话说清楚，作为听不懂时的对照`
+        ? `- 英语和日语各自用本语言自然的口语方式表达同一个意思，不要把填充词逐字对译；两列中文都必须干净完整、把话说清楚，作为听不懂时的对照，各自仍贴着自己那一列的分句顺序`
         : `- 中文那一列必须干净完整、把话说清楚，作为听不懂时的对照，不要跟着写成口语碎句`,
     ];
     const qFormatRule = wantsSpokenQ
@@ -472,9 +491,9 @@ function buildPrompt(mode) {
         countLine,
         ``,
         `严格按以下格式输出，每行一条（一个 Q 后面可以跟 1 到 5 条 A）：`,
-        `Q:<面试官的英语问题>|||<对应日语问题>|||<简体中文翻译>`,
-        `A:<英语回答·要点1>|||<对应日语>|||<简体中文翻译>`,
-        `A:<英语回答·要点2（同一问题，可选）>|||<对应日语>|||<简体中文翻译>`,
+        `Q:<面试官的英语问题>|||<对应日语问题>|||<贴着英语语序的简体中文>|||<贴着日语语序的简体中文>`,
+        `A:<英语回答·要点1>|||<对应日语>|||<贴着英语语序的简体中文>|||<贴着日语语序的简体中文>`,
+        `A:<英语回答·要点2（同一问题，可选）>|||<对应日语>|||<贴着英语语序的简体中文>|||<贴着日语语序的简体中文>`,
         ``,
         ...depthSection,
         ``,
@@ -482,7 +501,7 @@ function buildPrompt(mode) {
         discussion
           ? `- 简单回答用 1-2 条 A；只在原讨论确实包含多个要点时拆成 3-5 条 A，不要用扩写来凑答案`
           : `- 简单问题用 1-2 条 A；需要解释机制、取舍或边界的复杂问题通常用 3-5 条 A 逐点答透，越是 deep dive / 系统设计越要把逻辑讲完整`,
-        `- 每条 A 都必须独占一行、各自以 A: 开头、各自带完整的三列（英语|||日语|||中文）；绝不要把多个要点塞进同一行，也不要写没有 A: 前缀的续行`,
+        `- 每条 A 都必须独占一行、各自以 A: 开头、各自带完整的四列（英语|||日语|||中文(对英)|||中文(对日)）；绝不要把多个要点塞进同一行，也不要写没有 A: 前缀的续行`,
         `- 多条 A 之间要有逻辑推进（先结论、再原因 / 机制、再取舍、再边界 / 例子 / 生产经验），合起来内容资深、解释完整、语言简单`,
         ``,
         `语域红线（非母语跟读材料——最重要的一节，逐条遵守）：`,
@@ -492,19 +511,20 @@ function buildPrompt(mode) {
         `- 词汇用最常用的高频词 + 真实技术术语（Kafka、JWT、API、replay、idempotency 这类照留）；禁止习语、谚语和书面修辞`,
         `- 禁用包装词：spearheaded、leveraged、mission-critical、cutting-edge、world-class、seamlessly、state-of-the-art`,
         enConnectorRule,
+        ...vocabSection(true),
         ...spokenQSection(true),
         ``,
         `格式与朗读要求：`,
         `- 每行以 Q: 或 A: 开头；顺序是「一个 Q，紧跟它的若干条 A」，再下一个 Q`,
-        `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文，共三列`,
-        `- 三列必须是同一句意思的对应翻译，英语和日语互为翻译`,
+        `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文(对英)|||中文(对日)，共四列`,
+        `- 英语和日语互为翻译，两列中文与它们同义`,
         qFormatRule,
         `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
         `- 英语、日语都要适合朗读：口语化、节奏清楚`,
         jaFuriganaRule,
         jaNaturalRule,
         acronymRule,
-        `- 中文翻译要简洁自然、完整对应英语和日语的信息，不要额外扩写原文没有的内容`,
+        zhAlignDual,
         `- 每条内容必须独占一行，不要换行续写`,
         `- 任意一列内部都不能再出现 |||`,
         `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
@@ -538,6 +558,7 @@ function buildPrompt(mode) {
       `- 词汇用最常用的高频词 + 真实技术术语（Kafka、JWT、API、replay、idempotency 这类照留）；禁止习语、谚语和书面修辞`,
       `- 禁用包装词：spearheaded、leveraged、mission-critical、cutting-edge、world-class、seamlessly、state-of-the-art`,
       enConnectorSingle,
+      ...vocabSection(false),
       ...spokenQSection(false),
       ``,
       `格式与朗读要求：`,
@@ -549,7 +570,7 @@ function buildPrompt(mode) {
       jaFuriganaSingle,
       jaNaturalSingle,
       acronymRule,
-      `- 中文翻译要简洁自然、完整对应${L}的信息，不要额外扩写原文没有的内容`,
+      zhAlignSingle,
       `- 每条内容必须独占一行，不要换行续写`,
       `- 左右两边都不能包含 |||`,
       `- 只输出问答行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
@@ -565,12 +586,12 @@ function buildPrompt(mode) {
       `句子数量：${promptCount("text")}`,
       ``,
       `严格按以下格式输出，每行一条：`,
-      `<英语句子>|||<日语句子>|||<简体中文>`,
+      `<英语句子>|||<日语句子>|||<贴着英语语序的简体中文>|||<贴着日语语序的简体中文>`,
       ``,
       `要求：`,
-      `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文，共三列`,
+      `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文(对英)|||中文(对日)，共四列`,
       `- 每行一个完整短句，必须独占一行，不要换行续写`,
-      `- 三列必须是同一句意思的对应翻译，互为翻译、长度大致相当`,
+      `- 英语和日语互为翻译、长度大致相当，两列中文与它们同义`,
       `- 英语、日语都要自然口语化，适合朗读和影子跟读`,
       jaFuriganaRule,
       jaNaturalRule,
@@ -579,7 +600,9 @@ function buildPrompt(mode) {
       `- 允许用一个简单的原因、条件、时间或转折从句把意思说完整，但不要嵌套从句、写长关系从句或长连体修饰`,
       `- 任意一列内部都不能再出现 |||`,
       `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
-      `- 中文翻译要简洁自然、完整对应英语和日语的信息，不要额外扩写原文没有的内容`,
+      zhAlignDual,
+      ...vocabSection(true),
+      ``,
       `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
     ].filter((line) => line !== null).join("\n");
   }
@@ -603,7 +626,9 @@ function buildPrompt(mode) {
     `- 每句保持适合跟读的长度：${L}${lenHint}`,
     simpleClauseSingle,
     `- 难度循序渐进，优先高频表达，避免过长从句、生僻专名和难读符号`,
-    `- 中文翻译要简洁自然、完整对应${L}的信息，不要额外扩写原文没有的内容`,
+    zhAlignSingle,
+    ...vocabSection(false),
+    ``,
     `- 只输出句子行，不要标题、表格、序号、项目符号、解释、Markdown 或代码块`,
   ].filter((line) => line !== null).join("\n");
 }
