@@ -307,34 +307,40 @@ function langWord() {
 // Count shown in the copy-prompt helper. Each interview flavor remembers its
 // own value; a chat transcript usually contains fewer distinct topics than a
 // full mock interview, so discussion starts at 12 instead of 24.
-// A lecture counts sections (10–20 lines each), not sentences: 6 sections is
-// one chapter told end to end, about 60–120 lines.
-const promptCounts = { sentences: 15, lecture: 6, general: 24, sysdesign: 24, discussion: 12 };
+// 讲课 has no entry on purpose: how many sections a chapter needs follows the
+// material, so the model splits it and the control is hidden.
+const promptCounts = { sentences: 15, general: 24, sysdesign: 24, discussion: 12 };
 
 function promptCountKey(mode) {
   return mode === "interview" ? interviewStyle() : textStyle();
+}
+
+// 讲课 is the one flavor with nothing to count.
+function hasPromptCount(mode) {
+  return promptCountKey(mode) !== "lecture";
 }
 
 function promptCount(mode) {
   const key = promptCountKey(mode);
   const n = parseInt(promptCounts[key], 10);
   if (Number.isFinite(n) && n > 0) return n;
-  return key === "discussion" ? 12 : key === "sentences" ? 15 : key === "lecture" ? 6 : 24;
+  return key === "discussion" ? 12 : key === "sentences" ? 15 : 24;
 }
 
 function syncPromptCountUI() {
   const input = $("promptCount");
   const label = $("promptCountLabel");
+  const counted = hasPromptCount(currentMode);
   if (currentMode === "interview") {
     label.textContent = interviewStyle() === "discussion"
       ? "目标问题数量（素材不足时宁少勿编）"
       : "问题数量（Q 的个数，建议 ≥ 20；每个 Q 可配多条 A、含深挖追问）";
-  } else {
-    label.textContent = textStyle() === "lecture"
-      ? "小节数量（每小节 10-20 行；建议 4-8 节，一章讲完）"
-      : "句子数量";
+  } else if (counted) {
+    label.textContent = "句子数量";
   }
-  input.value = promptCounts[promptCountKey(currentMode)];
+  // Hide the field for 讲课 rather than leaving a number that does nothing.
+  $("promptCountField").classList.toggle("hidden", !counted);
+  if (counted) input.value = promptCounts[promptCountKey(currentMode)];
   $("interviewStyleField").classList.toggle("hidden", currentMode !== "interview");
   $("textStyleField").classList.toggle("hidden", currentMode !== "text");
   // Spoken-Q only makes sense when a script is being written from scratch — in
@@ -345,7 +351,7 @@ function syncPromptCountUI() {
   $("promptHelp").textContent = currentMode === "interview" && interviewStyle() === "discussion"
     ? "把下面提示词直接发在原技术会话末尾；如果要在新会话中使用，请把聊天记录粘到提示词末尾。整理结果可以直接粘到下面输入框。"
     : currentMode === "text" && textStyle() === "lecture"
-    ? "复制下面提示词，发给 ChatGPT / Claude，填上章节主题（可以把教材、文章或网页内容一起贴在后面当素材），把生成的讲课稿直接粘到下面输入框。讲完一章再用「面试稿 → 聊天整理」把它整理成问答，两边用词就是同一套。"
+    ? "复制下面提示词，发给 ChatGPT / Claude，填上章节主题（可以把教材、文章或网页内容一起贴在后面当素材），把生成的讲课稿直接粘到下面输入框。小节数量不用填，由模型按内容自己拆。讲完一章再用「面试稿 → 聊天整理」把它整理成问答，两边用词就是同一套。"
     : "复制下面提示词，发给 ChatGPT / Claude，填上主题，把它生成的结果直接粘到下面输入框即可。提示词会随上方标签页、是否勾选「三语稿」、「目标语言」以及下面的数量自动调整。";
 }
 
@@ -659,7 +665,6 @@ function buildPrompt(mode) {
 // line format is unchanged (text mode eats it as-is); coherence comes from
 // discourse markers between lines and `#` section comments the parser skips.
 function buildLecturePrompt(dual, L, langCode, rules) {
-  const sections = promptCount("text");
   const columns = dual
     ? "英语|||日语|||中文(对英)|||中文(对日)"
     : `${L}|||简体中文`;
@@ -688,7 +693,7 @@ function buildLecturePrompt(dual, L, langCode, rules) {
     intro,
     ``,
     `主题/章节：【在这里填，例如：Redis 的持久化机制；可以把教材、文章或网页内容贴在本指令末尾作为素材】`,
-    `小节数量：${sections}（每小节 10-20 行，整篇约 ${sections * 10}-${sections * 20} 行，把这一章讲完）`,
+    `小节数量：由你按内容自己拆 —— 讲完这一章需要几节就写几节`,
     ``,
     `严格按以下格式输出，每行一条：`,
     formatLine,
@@ -697,6 +702,8 @@ function buildLecturePrompt(dual, L, langCode, rules) {
     `- 这是一条连续的叙事，不是知识点清单，也不是问答：每一句都接着上一句说，后面的内容踩在前面已经讲过的内容上`,
     `- 开头用一个现实生活里的问题或场景引入，先让人明白「为什么需要这个东西」，再引出概念`,
     `- 主线按「现实问题 → 概念 → 机制怎么运作 → 为什么这样设计 → 取舍与代价 → 边界和失败场景」推进；每个小节只往前推一步，不要在一节里塞两个概念`,
+    `- 小节怎么分由内容决定：先列出讲完这一章要走哪几步，一步一节，走到边界和失败场景为止；素材厚、机制复杂就多分几节，主题小就少分几节，不要为了凑一个数字硬拆或硬并`,
+    `- 用长度自查拆得对不对：一节写到 20 行以上，说明它其实是两步，拆开；不到 10 行，说明这一步撑不起一节，并进相邻小节`,
     `- 每个小节的第一行是一句口语化的小节引入（如 ${titleExample}），最后一到两行用同样的词把这一节的要点复述一遍`,
     `- 整篇最后一个小节是回顾：用前面用过的原词，把这一章讲了什么按顺序再说一遍`,
     `- 用现实生活的类比讲机制：类比先出场（便签和档案柜、邮局的多个窗口、餐厅的点单本这类），紧接着用一句话把类比明确映射回技术术语；类比是帮助理解的桥，不能代替对机制本身的解释`,
