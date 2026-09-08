@@ -59,7 +59,7 @@ RETENTION_DAYS = float(os.environ.get("ECHO_RETENTION_DAYS", "0") or 0)
 MAX_JOBS = int(os.environ.get("ECHO_MAX_JOBS", "0") or 0)
 
 VALID_MODES = ("text", "interview")
-VALID_ENGINES = ("google", "edge", "openai")
+VALID_ENGINES = ("google", "edge", "openai", "elevenlabs")
 VALID_LANGS = ("ja", "en")
 VALID_VARIANTS = ("full", "progressive", "shadow")
 

@@ -236,6 +236,14 @@ def _text_default_lang(config: dict) -> str:
         voice = tts.get("google", {}).get("target_voice", "")
     elif engine == "edge":
         voice = tts.get("target_voice", "")
+    elif engine == "elevenlabs":
+        # ElevenLabs voice ids carry no language prefix; find which language
+        # preset the configured voice belongs to.
+        voice_id = tts.get("elevenlabs", {}).get("target_voice", "")
+        for lang, preset in (tts.get("lang_presets") or {}).items():
+            if voice_id and isinstance(preset, dict) and preset.get("elevenlabs") == voice_id:
+                return lang if lang in {"ja", "en"} else ""
+        return ""
     else:
         voice = ""
     lang = voice.split("-", 1)[0].lower()

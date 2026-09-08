@@ -72,7 +72,7 @@ function langLabel(value) {
 }
 
 function engineLabel(value) {
-  return { google: "Google", edge: "edge-tts", openai: "OpenAI" }[value] || "配置";
+  return { google: "Google", edge: "edge-tts", openai: "OpenAI", elevenlabs: "ElevenLabs v3" }[value] || "配置";
 }
 
 function loopLabel(loop) {

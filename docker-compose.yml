@@ -23,6 +23,7 @@ services:
       ECHO_WEB_TOKEN: "${ECHO_WEB_TOKEN:-}"
       # Optional: OpenAI engine.
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ELEVENLABS_API_KEY: "${ELEVENLABS_API_KEY:-}"
       # Optional auto-cleanup of generated audio (0 = keep forever).
       ECHO_RETENTION_DAYS: "${ECHO_RETENTION_DAYS:-0}"
       ECHO_MAX_JOBS: "${ECHO_MAX_JOBS:-0}"
