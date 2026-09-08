@@ -38,6 +38,7 @@ cp /path/to/your-service-account.json ./google-credentials.json
 
 # Optional config
 cp .env.example .env      # then edit if you want a token / different port
+# ELEVENLABS_API_KEY in .env if you use the ElevenLabs engine (Japanese target voice)
 ```
 
 `config.yaml` is mounted read-only into the container, so any voice / timing /

@@ -24,13 +24,37 @@ timing:
   after_second_target: 1.2   # seconds of silence after second target audio (loop gap)
 
 tts:
-  # Engine: "google" (default, paid, stable), "edge" (free), or
-  # "openai" (paid, gpt-4o-mini-tts; understands math formulas).
+  # Engine: "google" (default, paid, stable), "edge" (free),
+  # "openai" (paid, gpt-4o-mini-tts; understands math formulas), or
+  # "elevenlabs" (paid; v3 — by far the most natural Japanese, target only).
   # Required environment per engine:
-  #   google -> GOOGLE_APPLICATION_CREDENTIALS pointing to service account JSON
-  #   openai -> OPENAI_API_KEY
-  #   edge   -> none
+  #   google     -> GOOGLE_APPLICATION_CREDENTIALS pointing to service account JSON
+  #   openai     -> OPENAI_API_KEY
+  #   elevenlabs -> ELEVENLABS_API_KEY (+ GOOGLE creds: narration stays on Google)
+  #   edge       -> none
   engine: "google"
+
+  # Narration (Chinese) engine when engine is "elevenlabs". ElevenLabs is
+  # target-only: Chinese would eat ~40% of the credits for no gain over
+  # Chirp3-HD. Empty = google.
+  native_engine: ""
+
+  # --- ElevenLabs settings (used when engine: "elevenlabs") ---
+  # v3 refuses per-line context (previous_text etc.), so lines are sent as
+  # paragraphs to /text-to-dialogue/with-timestamps and cut back into one clip
+  # per line at the model's own boundaries, each verified to sit in silence
+  # (audio/elevenlabs_tts.py; the CLAUDE.md TTS/LRC rule records the exception).
+  elevenlabs:
+    model_id: "eleven_v3"
+    concurrency: 3                 # Starter tier = 3 concurrent requests, Free = 2
+    output_format: "mp3_44100_128" # 192k needs Creator+
+    stability: 0.5
+    max_chunk_lines: 10            # lines per paragraph request
+    max_chunk_chars: 2000          # well under the 5,000 request cap
+    # target_voice is filled from lang_presets below (voice ids are opaque and
+    # the accent is baked in, so each language needs its own).
+    # speed: v3 ignores the API field; the multiplier from target_rate /
+    # interview rates is applied locally with ffmpeg atempo after the cut.
 
   # --- edge-tts settings (used when engine: "edge") ---
   target_voice: "ja-JP-NanamiNeural"   # Target language TTS voice (text-only mode)
@@ -61,7 +85,8 @@ tts:
     ja:
       google: "ja-JP-Chirp3-HD-Charon"        # Japanese — male persona
       edge:   "ja-JP-NanamiNeural"
-    en:
+      elevenlabs: "8EkOjt4xTPGMclNlh1pk"      # Morioki — conversational female (2026-09-09 pick)
+    en:                                       # no elevenlabs voice: English stays on Google
       google: "en-US-Chirp3-HD-Puck"          # English — distinct persona from ja
       edge:   "en-US-JennyNeural"
 

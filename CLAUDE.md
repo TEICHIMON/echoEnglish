@@ -78,6 +78,16 @@
   需要 native TTS 时，也必须一对一对应一个 native 音频片段。
 - TTS 字幕的起止时间只能来自解码后的真实音频时长。严禁先生成多句/整段 TTS，再按字符数、
   单词数、平均语速或比例估算句内时间轴。
+
+  **唯一例外（2026-09-09 定，为了 ElevenLabs v3）**：整段 TTS 可以切成逐句 clip，前提是
+  切点来自 TTS 服务随音频一起返回的**逐字符 / 逐输入对齐**（`/with-timestamps` 的
+  `alignment`、`/text-to-dialogue/with-timestamps` 的 `voice_segments`），并且每个切点
+  经过 `audio/splitter.py` 的能量判据验证落在静音里（退到静音、留量只吃静音）。任一切点
+  不在静音里，整段作废重生成，不能退回估算。切出来的每个 clip 仍是真实解码音频，LRC 按
+  clip 实际长度重建。为什么允许：v3 拒绝一切逐句拼接上下文（`previous_text` /
+  `previous_request_ids` / `eleven_v3_conversational` 三条路全是 400），孤立短句效果远差于
+  整段，而用户盲听 v3 整段「明显更好，差距不是一星半点」。实测细节见
+  `docs/elevenlabs_plan.md` 的「Phase 0 实测结果」。
 - 混合原音与 TTS 时，每个 segment 必须保留来源（原音切片或 TTS）和真实毫秒长度；任一
   segment 缺少真实边界时必须失败，不能降级为估算时间。
 - 任务辅助脚本必须复用 `audio.tts_generator`、`audio.timing`、assembler 和 LRC writer 的

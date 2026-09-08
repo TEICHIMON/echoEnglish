@@ -68,6 +68,11 @@ LANG_PRESETS: dict[str, dict[str, str]] = {
     "ja": {
         "google": "ja-JP-Chirp3-HD-Charon",   # male persona
         "edge":   "ja-JP-NanamiNeural",
+        # ElevenLabs voice ids are opaque and the accent is baked in, so each
+        # language needs its own native voice. Only Japanese is configured
+        # (2026-09-09 decision): English keeps the engine it had. An engine of
+        # "elevenlabs" with no voice for the language falls back to Google.
+        "elevenlabs": "8EkOjt4xTPGMclNlh1pk",  # Morioki — conversational female
     },
     "en": {
         "google": "en-US-Chirp3-HD-Puck",     # distinct male persona from ja
@@ -87,6 +92,10 @@ INTERVIEW_LANG_PRESETS: dict[str, dict[str, object]] = {
             "interviewer_voice": "echo",
             "interviewee_voice": "coral",
         },
+        "elevenlabs": {
+            "interviewer_voice": "8FuuqoKHuM48hIEwni5e",  # Shohei — warm male
+            "interviewee_voice": "8EkOjt4xTPGMclNlh1pk",  # Morioki — female
+        },
     },
     "en": {
         "interviewer_voice": "en-US-GuyNeural",
@@ -101,6 +110,11 @@ INTERVIEW_LANG_PRESETS: dict[str, dict[str, object]] = {
         },
     },
 }
+
+# Every selectable TTS engine. "elevenlabs" is target-language only and only
+# for languages that have an ElevenLabs voice in lang_presets (Japanese); the
+# narration and other languages fall back to Google — see _resolve_target_engine.
+TTS_ENGINES: tuple[str, ...] = ("google", "edge", "openai", "elevenlabs")
 
 OPENAI_VOICES: tuple[str, ...] = (
     "alloy", "ash", "ballad", "cedar", "coral", "echo",
@@ -146,6 +160,9 @@ def apply_speaking_rate(config: dict, rate: float | None) -> None:
         return
     config["tts"]["google"]["speaking_rate"] = rate
     config["tts"]["openai"]["speed"] = rate
+    # v3 ignores its own speed field, so this is applied locally (ffmpeg
+    # atempo) after the paragraph cut — see audio/elevenlabs_tts.py.
+    config["tts"].setdefault("elevenlabs", {})["speed"] = rate
     config["tts"]["rate"] = f"{(rate - 1.0) * 100:+.0f}%"
 
 
@@ -186,6 +203,19 @@ def load_config(config_path: str | Path | None = None) -> dict:
                 "native_voice": "cmn-CN-Chirp3-HD-Kore",
                 "speaking_rate": 1.0,
                 "pitch": 0.0,
+            },
+            # Engine for the Chinese narration when tts.engine is "elevenlabs"
+            # (which is target-only). Empty = google.
+            "native_engine": "",
+            "elevenlabs": {
+                "model_id": "eleven_v3",
+                "target_voice": "",          # filled from lang_presets
+                "concurrency": 2,            # Free tier limit; Starter allows 3
+                "output_format": "mp3_44100_128",
+                "stability": 0.5,
+                "speed": 1.0,                # applied locally via atempo
+                "max_chunk_lines": 10,
+                "max_chunk_chars": 2000,
             },
             "lang_presets": copy.deepcopy(LANG_PRESETS),
             "gain": 0,
@@ -233,6 +263,10 @@ def load_config(config_path: str | Path | None = None) -> dict:
                 "interviewer_voice": "echo",
                 "interviewee_voice": "coral",
             },
+            "elevenlabs": {
+                "interviewer_voice": "",
+                "interviewee_voice": "",
+            },
             "presets": copy.deepcopy(INTERVIEW_LANG_PRESETS),
             # Per-role speech-rate multipliers. Raising only the interviewer
             # makes the questions harder to follow (listening practice) while
@@ -257,18 +291,20 @@ def load_config(config_path: str | Path | None = None) -> dict:
                     defaults["interview"]["google"].update(interview_user["google"])
                 if "openai" in interview_user and isinstance(interview_user["openai"], dict):
                     defaults["interview"]["openai"].update(interview_user["openai"])
+                if "elevenlabs" in interview_user and isinstance(interview_user["elevenlabs"], dict):
+                    defaults["interview"]["elevenlabs"].update(interview_user["elevenlabs"])
                 if "presets" in interview_user and isinstance(interview_user["presets"], dict):
                     for lang, preset in interview_user["presets"].items():
                         if not isinstance(preset, dict):
                             continue
                         target = defaults["interview"]["presets"].setdefault(lang, {})
                         for k, v in preset.items():
-                            if k in ("google", "openai") and isinstance(v, dict):
+                            if k in ("google", "openai", "elevenlabs") and isinstance(v, dict):
                                 target.setdefault(k, {}).update(v)
                             else:
                                 target[k] = v
                 for k, v in interview_user.items():
-                    if k not in ("google", "openai", "presets"):
+                    if k not in ("google", "openai", "elevenlabs", "presets"):
                         defaults["interview"][k] = v
                 lang = defaults["interview"].get("lang")
                 if lang in defaults["interview"].get("presets", {}):
@@ -279,6 +315,8 @@ def load_config(config_path: str | Path | None = None) -> dict:
                     defaults["tts"]["openai"].update(tts_user["openai"])
                 if "google" in tts_user and isinstance(tts_user["google"], dict):
                     defaults["tts"]["google"].update(tts_user["google"])
+                if "elevenlabs" in tts_user and isinstance(tts_user["elevenlabs"], dict):
+                    defaults["tts"]["elevenlabs"].update(tts_user["elevenlabs"])
                 if "lang_presets" in tts_user and isinstance(tts_user["lang_presets"], dict):
                     # Per-language merge so overriding one engine's voice for one
                     # language doesn't wipe the other language or the other engine.
@@ -286,7 +324,7 @@ def load_config(config_path: str | Path | None = None) -> dict:
                         if isinstance(preset, dict):
                             defaults["tts"]["lang_presets"].setdefault(lang, {}).update(preset)
                 for k, v in tts_user.items():
-                    if k not in ("openai", "google", "lang_presets"):
+                    if k not in ("openai", "google", "elevenlabs", "lang_presets"):
                         defaults["tts"][k] = v
 
     # Backward compatibility: old "voice" key → native_voice
@@ -296,8 +334,10 @@ def load_config(config_path: str | Path | None = None) -> dict:
     elif "voice" in tts:
         tts.pop("voice")
 
-    if tts.get("engine") not in ("edge", "openai", "google"):
+    if tts.get("engine") not in TTS_ENGINES:
         tts["engine"] = "google"
+    if tts.get("native_engine") not in ("edge", "openai", "google"):
+        tts["native_engine"] = ""
 
     if tts.get("gain") is None:
         tts["gain"] = 0
@@ -319,6 +359,11 @@ def load_config(config_path: str | Path | None = None) -> dict:
 
     tts["google"]["speaking_rate"] = float(tts["google"].get("speaking_rate", 1.0))
     tts["google"]["pitch"] = float(tts["google"].get("pitch", 0.0))
+
+    el = tts["elevenlabs"]
+    el["speed"] = float(el.get("speed") or 1.0)
+    el["stability"] = float(el.get("stability") if el.get("stability") is not None else 0.5)
+    el["concurrency"] = int(el.get("concurrency") or 2)
 
     tts["target_rate"] = coerce_speaking_rate(tts.get("target_rate"))
     interview = defaults["interview"]
@@ -621,7 +666,7 @@ Modes:
     )
 
     tts_group = parser.add_argument_group("TTS (overrides config)")
-    tts_group.add_argument("--engine", choices=["edge", "openai", "google"], default=None)
+    tts_group.add_argument("--engine", choices=list(TTS_ENGINES), default=None)
     tts_group.add_argument(
         "--lang", choices=sorted(LANG_PRESETS.keys()), default=None,
         help="Target language preset (ja / en). Sets target voice for "
@@ -695,6 +740,9 @@ def _apply_target_language_preset(config: dict, lang: str) -> None:
         config["tts"]["target_voice"] = preset["edge"]
     if preset.get("google"):
         config["tts"]["google"]["target_voice"] = preset["google"]
+    # Always overwrite: a language without an ElevenLabs voice must clear any
+    # voice left over from another language, or the accent would be wrong.
+    config["tts"].setdefault("elevenlabs", {})["target_voice"] = preset.get("elevenlabs", "") or ""
 
 
 def _apply_interview_language_preset(config: dict, lang: str) -> None:
@@ -721,6 +769,12 @@ def _apply_interview_language_preset(config: dict, lang: str) -> None:
             config["interview"]["openai"]["interviewer_voice"] = openai["interviewer_voice"]
         if openai.get("interviewee_voice"):
             config["interview"]["openai"]["interviewee_voice"] = openai["interviewee_voice"]
+
+    # Same reasoning as _apply_target_language_preset: overwrite, don't merge.
+    el = preset.get("elevenlabs") or {}
+    config["interview"].setdefault("elevenlabs", {})
+    config["interview"]["elevenlabs"]["interviewer_voice"] = el.get("interviewer_voice", "") if isinstance(el, dict) else ""
+    config["interview"]["elevenlabs"]["interviewee_voice"] = el.get("interviewee_voice", "") if isinstance(el, dict) else ""
 
 
 def google_voice_with_persona(voice_name: str, persona: str) -> str:
@@ -1149,6 +1203,7 @@ def _interactive_apply_tts(config: dict) -> None:
             ("google", "Google Cloud TTS (stable, paid)"),
             ("edge", "edge-tts (free)"),
             ("openai", "OpenAI TTS (best for math / symbols, paid)"),
+            ("elevenlabs", "ElevenLabs v3 (Japanese target only; narration stays on Google)"),
         ],
         default=config["tts"].get("engine", "google"),
     )
@@ -1214,7 +1269,7 @@ def _interactive_apply_native_voice(config: dict) -> None:
 
 def _native_rate(config: dict) -> float:
     """Current speaking-rate multiplier for the native narration."""
-    engine = config["tts"]["engine"]
+    engine = _native_engine(config)
     if engine == "google":
         return float(config["tts"]["google"].get("speaking_rate") or 1.0)
     if engine == "openai":
@@ -1231,7 +1286,7 @@ def _apply_native_rate(config: dict, rate: float) -> None:
     rate = coerce_speaking_rate(rate)
     if rate is None:
         return
-    engine = config["tts"]["engine"]
+    engine = _native_engine(config)
     if engine == "google":
         config["tts"]["google"]["speaking_rate"] = rate
     elif engine == "openai":
@@ -1371,6 +1426,12 @@ def _config_for_interview_role(config: dict, role: str) -> dict:
     c["tts"]["openai"]["target_voice"] = (
         openai.get(openai_key) or c["tts"]["openai"].get("target_voice", "")
     )
+
+    el = interview.get("elevenlabs", {})
+    el_key = "interviewee_voice" if is_answer else "interviewer_voice"
+    c["tts"].setdefault("elevenlabs", {})["target_voice"] = (
+        el.get(el_key) or c["tts"]["elevenlabs"].get("target_voice", "")
+    )
     return c
 
 
@@ -1405,6 +1466,14 @@ def _interactive_apply_interview_voices(config: dict) -> None:
             "edge interviewee voice",
             config["interview"]["interviewee_voice"],
             required=True,
+        )
+    elif engine == "elevenlabs":
+        el = config["interview"]["elevenlabs"]
+        el["interviewer_voice"] = _prompt_string(
+            "ElevenLabs interviewer voice_id", el.get("interviewer_voice", ""), required=True,
+        )
+        el["interviewee_voice"] = _prompt_string(
+            "ElevenLabs interviewee voice_id", el.get("interviewee_voice", ""), required=True,
         )
     elif engine == "openai":
         openai = config["interview"]["openai"]
@@ -1799,6 +1868,18 @@ def _rate_label(config: dict) -> str:
 
 def _engine_label(config: dict) -> str:
     engine = config["tts"]["engine"]
+    if engine == "elevenlabs":
+        el = config["tts"]["elevenlabs"]
+        native = f"native={_native_engine(config)}"
+        if _resolve_target_engine(config) != "elevenlabs":
+            return f"google (no ElevenLabs voice for this language; {native})"
+        if _is_interview_config(config):
+            rv = config["interview"]["elevenlabs"]
+            return (
+                f"elevenlabs ({el['model_id']}, interviewer={rv['interviewer_voice']}, "
+                f"interviewee={rv['interviewee_voice']}, {native})"
+            )
+        return f"elevenlabs ({el['model_id']}, target={el['target_voice']}, {native})"
     if _is_interview_config(config):
         interview = config["interview"]
         if engine == "openai":
@@ -1968,9 +2049,47 @@ def _tts_volume_kwargs(config: dict, native: bool = False) -> dict:
     }
 
 
+def _native_engine(config: dict) -> str:
+    """Engine for the Chinese narration. ElevenLabs is target-only."""
+    engine = config["tts"]["engine"]
+    if engine == "elevenlabs":
+        return config["tts"].get("native_engine") or "google"
+    return engine
+
+
+def _resolve_target_engine(config: dict) -> str:
+    """Engine for the target voice.
+
+    "elevenlabs" needs a voice for the target language (only Japanese has one
+    in lang_presets); without it — e.g. the English half of a dual run — the
+    target falls back to Google rather than speaking with a wrong-language voice.
+    """
+    engine = config["tts"]["engine"]
+    if engine != "elevenlabs":
+        return engine
+    if _is_interview_config(config):
+        rv = config["interview"].get("elevenlabs", {})
+        if rv.get("interviewer_voice") and rv.get("interviewee_voice"):
+            return "elevenlabs"
+    elif config["tts"].get("elevenlabs", {}).get("target_voice"):
+        return "elevenlabs"
+    return "google"
+
+
 def _tts_engine_kwargs(config: dict) -> dict:
+    """Engine kwargs for the TARGET voice batch."""
     return {
-        "engine": config["tts"]["engine"],
+        "engine": _resolve_target_engine(config),
+        "openai_config": config["tts"]["openai"],
+        "google_config": config["tts"]["google"],
+        "elevenlabs_config": config["tts"].get("elevenlabs", {}),
+    }
+
+
+def _native_tts_engine_kwargs(config: dict) -> dict:
+    """Engine kwargs for the NATIVE (Chinese) narration batch."""
+    return {
+        "engine": _native_engine(config),
         "openai_config": config["tts"]["openai"],
         "google_config": config["tts"]["google"],
     }
@@ -2093,6 +2212,7 @@ def run_audio_mode(config: dict) -> None:
 
     native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
+    native_eng_kwargs = _native_tts_engine_kwargs(config)
 
     folder_log = attach_folder_log(audio_path.parent)
     try:
@@ -2148,7 +2268,7 @@ def run_audio_mode(config: dict) -> None:
             pitch=config["tts"]["pitch"],
             work_dir=work_dir,
             **native_vol_kwargs,
-            **eng_kwargs,
+            **native_eng_kwargs,
         )
         logger.info(f"  Generated {len(native_audios)} TTS audio clips")
 
@@ -2178,6 +2298,7 @@ def run_text_mode(config: dict) -> None:
     vol_kwargs = _tts_volume_kwargs(config)
     native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
+    native_eng_kwargs = _native_tts_engine_kwargs(config)
 
     folder_log = attach_folder_log(text_path.parent)
     try:
@@ -2240,7 +2361,7 @@ def run_text_mode(config: dict) -> None:
             pitch=config["tts"]["pitch"],
             work_dir=work_dir,
             **native_vol_kwargs,
-            **eng_kwargs,
+            **native_eng_kwargs,
         )
         logger.info(f"  Generated {len(native_audios)} native TTS clips")
 
@@ -2265,6 +2386,26 @@ def _generate_interview_target_audio(
     """Generate target-language clips with interviewer/interviewee voices by role."""
     target_audios = [None] * len(segments)
     role_labels = {"q": "interviewer", "a": "interviewee"}
+
+    if _resolve_target_engine(config) == "elevenlabs":
+        # v3 gets the whole Q/A sequence in script order — each paragraph
+        # request carries both voices — instead of one batch per role, so the
+        # answers are read in the context of their questions.
+        role_configs = {role: _config_for_interview_role(config, role) for role in role_labels}
+        voice_ids, speeds = [], []
+        for seg in segments:
+            role = getattr(seg, "role", "") or "a"
+            rc = role_configs.get(role) or role_configs["a"]
+            voice_ids.append(rc["tts"]["elevenlabs"]["target_voice"])
+            speeds.append(float(rc["tts"]["elevenlabs"].get("speed") or 1.0))
+        return generate_target_audio(
+            segments,
+            work_dir=work_dir / "elevenlabs",
+            elevenlabs_voice_ids=voice_ids,
+            elevenlabs_speeds=speeds,
+            **vol_kwargs,
+            **_tts_engine_kwargs(config),
+        )
 
     for role, label in role_labels.items():
         indexed_segments = [
@@ -2310,6 +2451,7 @@ def run_interview_mode(config: dict) -> None:
     vol_kwargs = _tts_volume_kwargs(config)
     native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
+    native_eng_kwargs = _native_tts_engine_kwargs(config)
 
     folder_log = attach_folder_log(interview_path.parent)
     try:
@@ -2368,7 +2510,7 @@ def run_interview_mode(config: dict) -> None:
             pitch=config["tts"]["pitch"],
             work_dir=work_dir,
             **native_vol_kwargs,
-            **eng_kwargs,
+            **native_eng_kwargs,
         )
         logger.info(f"  Generated {len(native_audios)} native TTS clips")
 
@@ -2557,6 +2699,7 @@ def _run_single_audio(
 
     native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
+    native_eng_kwargs = _native_tts_engine_kwargs(config)
 
     logger.info(f"  Audio: {audio_path.name}")
     logger.info(f"  LRC:   {lrc_path.name}")
@@ -2584,7 +2727,7 @@ def _run_single_audio(
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
         **native_vol_kwargs,
-        **eng_kwargs,
+        **native_eng_kwargs,
     )
 
     _assemble_and_export(
@@ -2606,6 +2749,7 @@ def _run_single_text(
     vol_kwargs = _tts_volume_kwargs(config)
     native_vol_kwargs = _tts_volume_kwargs(config, native=True)
     eng_kwargs = _tts_engine_kwargs(config)
+    native_eng_kwargs = _native_tts_engine_kwargs(config)
 
     logger.info(f"  Text: {text_path.name}")
     logger.info(f"  →     {output_path.name}")
@@ -2636,7 +2780,7 @@ def _run_single_text(
         pitch=config["tts"]["pitch"],
         work_dir=work_dir,
         **native_vol_kwargs,
-        **eng_kwargs,
+        **native_eng_kwargs,
     )
 
     _assemble_and_export(

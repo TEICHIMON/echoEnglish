@@ -1,10 +1,11 @@
 """
 TTS generator module.
 
-Generates audio from text using edge-tts, OpenAI gpt-4o-mini-tts, or
-Google Cloud Text-to-Speech.
+Generates audio from text using edge-tts, OpenAI gpt-4o-mini-tts,
+Google Cloud Text-to-Speech, or ElevenLabs v3 (target language only —
+see audio/elevenlabs_tts.py for why that engine works per paragraph).
 Supports both native language and target language TTS generation.
-Engine is selected via config: "edge", "openai", or "google".
+Engine is selected via config: "edge", "openai", "google", or "elevenlabs".
 """
 
 import asyncio
@@ -722,6 +723,12 @@ def generate_native_audio(
 
     texts = [seg.native_text for seg in segments]
 
+    if engine == "elevenlabs":
+        # The narration never goes through ElevenLabs (it would eat ~40% of
+        # the credits for Chinese that Google already does well). main.py
+        # resolves tts.native_engine before calling here.
+        raise ValueError("generate_native_audio: engine 'elevenlabs' is target-only")
+
     if engine == "google":
         return _run_google_batch(
             texts, work_dir, "native",
@@ -752,8 +759,17 @@ def generate_target_audio(
     engine: str = "edge",
     openai_config: dict | None = None,
     google_config: dict | None = None,
+    elevenlabs_config: dict | None = None,
+    elevenlabs_voice_ids: list[str] | None = None,
+    elevenlabs_speeds: list[float] | None = None,
 ) -> list[AudioSegment]:
-    """Generate target language TTS audio for all segments."""
+    """Generate target language TTS audio for all segments.
+
+    ``elevenlabs_voice_ids`` / ``elevenlabs_speeds`` are optional per-segment
+    overrides for the ElevenLabs engine (interview mode gives Q and A their own
+    voice and rate inside one paragraph request). They default to the engine
+    config's ``target_voice`` / ``speed``.
+    """
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="echo_tts_"))
     else:
@@ -763,6 +779,19 @@ def generate_target_audio(
     # subtitle (e.g. 漢字（かんじ）) aren't spoken twice.
     texts = [seg.target_tts_text for seg in segments]
 
+    if engine == "elevenlabs":
+        from audio.elevenlabs_tts import generate_elevenlabs_target_audio
+        el = elevenlabs_config or {}
+        n = len(texts)
+        return generate_elevenlabs_target_audio(
+            texts,
+            elevenlabs_voice_ids or [el.get("target_voice", "")] * n,
+            work_dir,
+            el,
+            speeds=elevenlabs_speeds or [float(el.get("speed") or 1.0)] * n,
+            gain_db=gain_db,
+            normalize_target_dbfs=normalize_target_dbfs,
+        )
     if engine == "google":
         return _run_google_batch(
             texts, work_dir, "target",
