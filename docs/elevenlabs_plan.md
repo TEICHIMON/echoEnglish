@@ -571,8 +571,17 @@ A=Morioki，旁白 Google，归一 −16 dBFS，LRC 4 行按 clip 实际长度�
 | 英语文本 | Mark - Natural Conversations | `UgBBYS2sOqTuMpoF3BR0` | 3.82M |
 | （用户自己加的） | Haru | `a0MsDWokG5Xsuji8g8er` | — |
 
-**英语面试模式仍退回 Google**：`_resolve_target_engine` 要求 Q/A 两个声音都有，英语只配了 Mark。
-要走 EL 得再加一个英语声音填 `INTERVIEW_LANG_PRESETS["en"]["elevenlabs"]`。
+英语面试补了 **Cassidy - Crisp, Direct and Clear**（`56AoDkrOh6qfVPDXZ7Pt`，118 万，conversational）
+当提问者。四种组合全部走 EL：
+
+| 语言 | 文本 | 面试 Q | 面试 A |
+|---|---|---|---|
+| 日语 | Morioki | Shohei | Morioki |
+| 英语 | Mark | Cassidy | Mark |
+
+**模式是「文本声音兼任回答者，另配一个提问者」** —— 回答的语体和讲课稿一致，提问换个人，
+两边区分明显。四组 voice_id 现在同时写在 `main.py` 的预设常量和 `config.yaml` 的
+`interview.presets` 里（后者之前漏了 elevenlabs 这一层，一并补上）。
 
 ### 第一次英文跑失败，烧掉 4,277 credits
 

@@ -218,6 +218,9 @@ interview:
       openai:
         interviewer_voice: "echo"
         interviewee_voice: "coral"
+      elevenlabs:                              # 2026-09-09 pick; A reuses the text voice
+        interviewer_voice: "56AoDkrOh6qfVPDXZ7Pt"   # Cassidy - Crisp, Direct and Clear
+        interviewee_voice: "UgBBYS2sOqTuMpoF3BR0"   # Mark - Natural Conversations
     ja:
       interviewer_voice: "ja-JP-KeitaNeural"
       interviewee_voice: "ja-JP-NanamiNeural"
@@ -227,3 +230,6 @@ interview:
       openai:
         interviewer_voice: "echo"
         interviewee_voice: "coral"
+      elevenlabs:                              # 2026-09-09 pick; A reuses the text voice
+        interviewer_voice: "8FuuqoKHuM48hIEwni5e"   # Shohei - Warm, Clear and Husky
+        interviewee_voice: "8EkOjt4xTPGMclNlh1pk"   # Morioki - Calm, Measured and Muffled
