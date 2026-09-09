@@ -702,6 +702,12 @@ Modes:
     tts_group.add_argument("--openai-instructions", default=None)
     tts_group.add_argument("--google-voice", default=None)
     tts_group.add_argument("--google-target-voice", default=None)
+    # ElevenLabs voice ids are opaque, so unlike the Google persona flags these
+    # take the raw id. Needed to run a language whose lang_preset deliberately
+    # has no ElevenLabs voice (English) without editing config.yaml.
+    tts_group.add_argument("--elevenlabs-target-voice", default=None)
+    tts_group.add_argument("--elevenlabs-interviewer-voice", default=None)
+    tts_group.add_argument("--elevenlabs-interviewee-voice", default=None)
     tts_group.add_argument(
         "--interviewer-voice", default=None,
         help="Interview mode edge-tts interviewer voice",
@@ -869,6 +875,14 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
         config["tts"]["google"]["native_voice"] = args.google_voice
     if args.google_target_voice:
         config["tts"]["google"]["target_voice"] = args.google_target_voice
+
+    # Applied after the language presets, so these win over them.
+    if args.elevenlabs_target_voice:
+        config["tts"]["elevenlabs"]["target_voice"] = args.elevenlabs_target_voice
+    if args.elevenlabs_interviewer_voice:
+        config["interview"]["elevenlabs"]["interviewer_voice"] = args.elevenlabs_interviewer_voice
+    if args.elevenlabs_interviewee_voice:
+        config["interview"]["elevenlabs"]["interviewee_voice"] = args.elevenlabs_interviewee_voice
 
     if args.interviewer_voice:
         config["interview"]["interviewer_voice"] = args.interviewer_voice
