@@ -669,3 +669,23 @@ A=Morioki，旁白 Google，归一 −16 dBFS，LRC 4 行按 clip 实际长度�
 而 Chirp3-HD 的英语本来就够用，听力 gap 在日语。所以 `lang_presets.en` 和
 `interview.presets.en` 的 elevenlabs 层都注释掉了，英语文本和面试都退回 Google。
 Mark / Cassidy 仍留在 EL 账号里（槽位 10 用 5），取消注释即可恢复。
+
+
+### 用缓存重建了正确的英文版（2026-09-09 晚）
+
+段落缓存这时候救了一次：14 个英文段落都还在 `~/.cache/echoEnglish/elevenlabs`，
+用修好的切法重切，**12 段直接可用，只有 2 段（0 和 7）过不了时长交叉验证需要重生成**。
+重建整份英文版只花 **574 credits**，而不是重付 3,872。14/14 段现在全部通过验证。
+
+顺带加了三个 CLI 开关，用来在不改 `config.yaml` 的前提下临时指定 ElevenLabs 声音
+（voice id 不透明，所以直接收原始 id，不像 Google 那样只换 persona）：
+
+```
+--elevenlabs-target-voice / --elevenlabs-interviewer-voice / --elevenlabs-interviewee-voice
+```
+
+这次就是用 `--lang en --elevenlabs-target-voice UgBBYS2sOqTuMpoF3BR0` 跑的：
+`lang_presets.en` 里故意没有 EL 声音（英语默认走 Google），CLI 覆盖让这一次走 EL。
+
+Google Drive 上错位的那份 `2026-09-09_11-57-18_db_index_en` 已删除，
+正确的是 `2026-09-09_12-54-35_db_index_en`。
