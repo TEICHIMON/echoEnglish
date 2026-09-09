@@ -99,6 +99,10 @@ INTERVIEW_LANG_PRESETS: dict[str, dict[str, object]] = {
         },
     },
     "en": {
+        "elevenlabs": {
+            "interviewer_voice": "56AoDkrOh6qfVPDXZ7Pt",  # Cassidy — crisp female
+            "interviewee_voice": "UgBBYS2sOqTuMpoF3BR0",  # Mark — same as the text voice
+        },
         "interviewer_voice": "en-US-GuyNeural",
         "interviewee_voice": "en-US-JennyNeural",
         "google": {
