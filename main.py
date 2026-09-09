@@ -77,6 +77,7 @@ LANG_PRESETS: dict[str, dict[str, str]] = {
     "en": {
         "google": "en-US-Chirp3-HD-Puck",     # distinct male persona from ja
         "edge":   "en-US-JennyNeural",
+        "elevenlabs": "UgBBYS2sOqTuMpoF3BR0",  # Mark — Natural Conversations
     },
 }
 

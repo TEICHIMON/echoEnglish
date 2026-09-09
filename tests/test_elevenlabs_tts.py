@@ -21,8 +21,10 @@ from pydub import AudioSegment
 from pydub.generators import Sine
 
 from audio.elevenlabs_tts import (
+    BOUNDARY_WINDOW_MS,
     ElevenLabsError,
     _Chunk,
+    assign_seams,
     boundaries_from_response,
     cut_paragraph,
     plan_chunks,
@@ -131,6 +133,44 @@ class ChunkPlanning(unittest.TestCase):
         texts = ["short", "y" * 3000, "short"]
         chunks = plan_chunks(texts, ["v"] * 3, max_lines=10, max_chars=2000)
         self.assertEqual([c.indices for c in chunks], [[0], [1], [2]])
+
+
+class SeamAssignment(unittest.TestCase):
+    """The seam->pause matching is a monotonic DP, not a greedy nearest walk.
+
+    Real paragraphs carry extra silent runs (comma pauses) between the sentence
+    pauses. A greedy walk can consume the wrong run for an early seam and then
+    fail on every later one; the DP pays a small local cost to keep the whole
+    assignment feasible. Frames are 10 ms.
+    """
+
+    def test_extra_candidates_between_real_pauses(self):
+        # runs at 1.0s, 1.4s(comma), 3.0s, 3.4s(comma), 5.0s ; seams at 1.0/3.0/5.0
+        runs = [(100, 110), (140, 150), (300, 310), (340, 350), (500, 510)]
+        picked = assign_seams(runs, [1000, 3000, 5000])
+        self.assertEqual(picked, [(100, 110), (300, 310), (500, 510)])
+
+    def test_greedy_trap_is_survived(self):
+        # seam 0's nearest run is the one seam 1 needs; a greedy pick would
+        # leave nothing for seam 1. The DP takes the second-nearest for seam 0.
+        runs = [(100, 110), (200, 210)]
+        picked = assign_seams(runs, [1900, 2000])
+        self.assertEqual(picked, [(100, 110), (200, 210)])
+
+    def test_assignment_is_strictly_increasing(self):
+        runs = [(100, 110), (300, 310), (500, 510), (700, 710)]
+        picked = assign_seams(runs, [1000, 3000, 7000])
+        self.assertEqual(picked, sorted(set(picked)))
+        self.assertEqual(len(picked), 3)
+
+    def test_too_few_pauses_raises(self):
+        with self.assertRaises(ElevenLabsError):
+            assign_seams([(100, 110)], [1000, 3000])
+
+    def test_seam_far_from_every_pause_raises(self):
+        far = BOUNDARY_WINDOW_MS * 4
+        with self.assertRaises(ElevenLabsError):
+            assign_seams([(100, 110), (200, 210)], [1000, far])
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not on PATH")

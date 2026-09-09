@@ -86,7 +86,8 @@ tts:
       google: "ja-JP-Chirp3-HD-Charon"        # Japanese — male persona
       edge:   "ja-JP-NanamiNeural"
       elevenlabs: "8EkOjt4xTPGMclNlh1pk"      # Morioki — conversational female (2026-09-09 pick)
-    en:                                       # no elevenlabs voice: English stays on Google
+    en:
+      elevenlabs: "UgBBYS2sOqTuMpoF3BR0"      # Mark - Natural Conversations (2026-09-09 pick)
       google: "en-US-Chirp3-HD-Puck"          # English — distinct persona from ja
       edge:   "en-US-JennyNeural"
 

@@ -246,8 +246,12 @@ def boundaries_from_response(resp: dict, chunk: _Chunk) -> list[tuple[int, int]]
 SOUND_DBFS = -55.0          # frames above this are "sound" (keeps the quiet
                             # devoiced endings like ます/です that sit 35 dB
                             # below the peak but far above the −85 dB floor)
-MIN_PAUSE_MS = 200          # a silent run shorter than this is inside a word
-BOUNDARY_WINDOW_MS = 1500   # how far from the model boundary the pause may be
+# Measured word-internal silences: Japanese 促音 / stop closures 30-80 ms,
+# English stop closures 60-90 ms. Real inter-sentence pauses are 240-870 ms in
+# both languages. 120 ms sits in that gap. Extra candidates (commas) are
+# harmless — the assignment below picks which run belongs to which seam.
+MIN_PAUSE_MS = 120
+BOUNDARY_WINDOW_MS = 2500   # how far a pause may sit from the model's seam time
 EDGE_PAD_MS = 200           # silence kept before the first / after the last
                             # sound of a line (same figure as the splitter)
 
@@ -290,6 +294,69 @@ def silent_runs(mask, min_ms: int = MIN_PAUSE_MS) -> list[tuple[int, int]]:
     return runs
 
 
+def assign_seams(
+    runs: list[tuple[int, int]],
+    seam_times_ms: list[int],
+) -> list[tuple[int, int]]:
+    """Match each model seam to its own silent run, in order, globally.
+
+    A greedy "nearest free run" walk fails on real paragraphs: extra candidates
+    (comma pauses) sit between the sentence pauses, and one early mis-pick makes
+    every later seam fail. This is a small dynamic program instead — it picks
+    the strictly increasing set of runs that minimises the total distance
+    between each seam's model time and its run, so a wrong local choice can be
+    paid back later. Distances beyond BOUNDARY_WINDOW_MS are refused outright.
+    """
+    n_seams, n_runs = len(seam_times_ms), len(runs)
+    if n_seams == 0:
+        return []
+    if n_runs < n_seams:
+        raise ElevenLabsError(
+            f"only {n_runs} pause(s) >= {MIN_PAUSE_MS} ms for {n_seams} seam(s); "
+            f"the model ran two lines together"
+        )
+    w = BOUNDARY_WINDOW_MS // FRAME_MS
+    INF = float("inf")
+
+    def dist(k: int, ri: int) -> float:
+        a, b = runs[ri]
+        t = seam_times_ms[k] // FRAME_MS
+        d = 0 if a <= t <= b else min(abs(t - a), abs(t - b))
+        return INF if d > w else float(d)
+
+    # best[k][r] = min total cost assigning seams 0..k using runs 0..r, seam k -> run r
+    best = [[INF] * n_runs for _ in range(n_seams)]
+    back = [[-1] * n_runs for _ in range(n_seams)]
+    for r in range(n_runs):
+        best[0][r] = dist(0, r)
+    for k in range(1, n_seams):
+        run_min, run_arg = INF, -1
+        for r in range(n_runs):
+            if r >= 1:  # best predecessor among runs < r
+                if best[k - 1][r - 1] < run_min:
+                    run_min, run_arg = best[k - 1][r - 1], r - 1
+            d = dist(k, r)
+            if d < INF and run_min < INF:
+                best[k][r] = run_min + d
+                back[k][r] = run_arg
+    last = min(range(n_runs), key=lambda r: best[n_seams - 1][r])
+    if best[n_seams - 1][last] == INF:
+        worst = max(
+            range(n_seams),
+            key=lambda k: min(dist(k, r) for r in range(n_runs)),
+        )
+        raise ElevenLabsError(
+            f"no pause >= {MIN_PAUSE_MS} ms within {BOUNDARY_WINDOW_MS} ms of the "
+            f"seam between lines {worst} and {worst + 1} "
+            f"(model {seam_times_ms[worst]} ms)"
+        )
+    picked = [0] * n_seams
+    for k in range(n_seams - 1, -1, -1):
+        picked[k] = last
+        last = back[k][last]
+    return [runs[r] for r in picked]
+
+
 def cut_paragraph(
     audio: AudioSegment,
     boundaries: list[tuple[int, int]],
@@ -316,28 +383,8 @@ def cut_paragraph(
     ]
 
     seam_times = [e for (_, e) in boundaries[:-1]]  # model seam k|k+1
-    chosen: list[tuple[int, int]] = []
-    last_used = -1
-    w = BOUNDARY_WINDOW_MS // FRAME_MS
-    for k, t_ms in enumerate(seam_times):
-        t = t_ms // FRAME_MS
-        best = None
-        for ri, (a, b) in enumerate(seams_available):
-            if ri <= last_used:
-                continue
-            mid = (a + b) // 2
-            d = 0 if a <= t <= b else min(abs(t - a), abs(t - b))
-            if d > w:
-                continue
-            if best is None or d < best[0]:
-                best = (d, ri, mid)
-        if best is None:
-            raise ElevenLabsError(
-                f"no pause >= {MIN_PAUSE_MS} ms within {BOUNDARY_WINDOW_MS} ms of "
-                f"the seam between lines {k} and {k + 1} (model {t_ms} ms)"
-            )
-        last_used = best[1]
-        chosen.append(seams_available[best[1]])
+    chosen = assign_seams(seams_available, seam_times)
+
 
     pad = EDGE_PAD_MS // FRAME_MS
     first_sound = int(mask.argmax())
@@ -381,6 +428,52 @@ def time_stretch(audio: AudioSegment, speed: float) -> AudioSegment:
         ]
         subprocess.run(cmd, check=True)
         return AudioSegment.from_file(dst, format="wav")
+
+
+# ---------------------------------------------------------------------------
+# Paragraph cache
+# ---------------------------------------------------------------------------
+#
+# A run that fails on one paragraph used to throw away every paragraph that had
+# already been paid for: one aborted 133-line English run burned 4,277 credits
+# and produced nothing. Synthesis is deterministic enough to cache — the key is
+# the exact request (model, format, stability, voices, texts) — so re-running
+# after a fix only pays for what is genuinely new.
+
+CACHE_DIR = Path(os.environ.get("ELEVENLABS_CACHE_DIR") or (Path.home() / ".cache" / "echoEnglish" / "elevenlabs"))
+
+
+def cache_key(chunk: _Chunk, model_id: str, output_format: str, stability: float | None) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    for part in (model_id, output_format, str(stability), *chunk.voice_ids, *chunk.texts):
+        h.update(part.encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:32]
+
+
+def cache_load(key: str) -> tuple[AudioSegment, list[tuple[int, int]]] | None:
+    mp3, meta = CACHE_DIR / f"{key}.mp3", CACHE_DIR / f"{key}.json"
+    if not (mp3.exists() and meta.exists()):
+        return None
+    try:
+        bounds = [tuple(b) for b in json.loads(meta.read_text())["model_boundaries_ms"]]
+        return AudioSegment.from_file(mp3, format="mp3"), bounds
+    except Exception:
+        return None
+
+
+def cache_store(key: str, raw: Path, bounds: list[tuple[int, int]], chunk: _Chunk) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copy(raw, CACHE_DIR / f"{key}.mp3")
+        (CACHE_DIR / f"{key}.json").write_text(
+            json.dumps({"model_boundaries_ms": bounds, "lines": chunk.indices,
+                        "texts": chunk.texts, "voice_ids": chunk.voice_ids}, ensure_ascii=False)
+        )
+    except Exception as e:  # a cache problem must never fail a run
+        logger.warning(f"ElevenLabs cache write failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -435,14 +528,32 @@ def generate_elevenlabs_target_audio(
         chunk = chunks[ci]
         seed = random.randint(0, 2**31 - 1)
         last_err: Exception | None = None
+        key = cache_key(chunk, model_id, output_format, stability)
+        raw = work_dir / f"el_para_{ci:03d}.mp3"
+
+        cached = cache_load(key)
+        if cached is not None:
+            audio, bounds = cached
+            try:
+                results[ci] = cut_paragraph(audio, bounds)
+                audio.export(raw, format="mp3")
+                (work_dir / f"el_para_{ci:03d}.json").write_text(
+                    json.dumps({"lines": chunk.indices, "model_boundaries_ms": bounds,
+                                "clip_ms": [len(c) for c in results[ci]], "cached": True},
+                               ensure_ascii=False))
+                logger.info(f"  paragraph {ci} (lines {chunk.indices[0]}–{chunk.indices[-1]}) from cache, 0 credits")
+                return
+            except ElevenLabsError:
+                pass  # cached audio no longer cuts cleanly — regenerate below
+
         for attempt in range(1, MAX_REGENERATE + 2):
             resp = _post_dialogue(chunk, model_id, output_format, stability, seed, session)
-            raw = work_dir / f"el_para_{ci:03d}.mp3"
             raw.write_bytes(base64.b64decode(resp["audio_base64"]))
             try:
                 bounds = boundaries_from_response(resp, chunk)
                 audio = AudioSegment.from_file(raw, format="mp3")
                 clips = cut_paragraph(audio, bounds)
+                cache_store(key, raw, bounds, chunk)
             except ElevenLabsError as e:
                 last_err = e
                 logger.warning(
