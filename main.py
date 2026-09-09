@@ -77,7 +77,11 @@ LANG_PRESETS: dict[str, dict[str, str]] = {
     "en": {
         "google": "en-US-Chirp3-HD-Puck",     # distinct male persona from ja
         "edge":   "en-US-JennyNeural",
-        "elevenlabs": "UgBBYS2sOqTuMpoF3BR0",  # Mark — Natural Conversations
+        # No ElevenLabs voice on purpose (2026-09-09): the same script costs
+        # ~2x in credits in English (7,745 chars vs 3,730 for Japanese), and
+        # Chirp3-HD English is already good enough. A language with no voice
+        # here falls back to Google — see _resolve_target_engine.
+        # To re-enable: "elevenlabs": "UgBBYS2sOqTuMpoF3BR0",  # Mark
     },
 }
 
@@ -99,10 +103,12 @@ INTERVIEW_LANG_PRESETS: dict[str, dict[str, object]] = {
         },
     },
     "en": {
-        "elevenlabs": {
-            "interviewer_voice": "56AoDkrOh6qfVPDXZ7Pt",  # Cassidy — crisp female
-            "interviewee_voice": "UgBBYS2sOqTuMpoF3BR0",  # Mark — same as the text voice
-        },
+        # English stays on Google (see LANG_PRESETS above for why). Both role
+        # voices must be set for the ElevenLabs path to engage, so leaving this
+        # out is what keeps English on Google in interview mode too.
+        # To re-enable:
+        #   "elevenlabs": {"interviewer_voice": "56AoDkrOh6qfVPDXZ7Pt",   # Cassidy
+        #                  "interviewee_voice": "UgBBYS2sOqTuMpoF3BR0"},  # Mark
         "interviewer_voice": "en-US-GuyNeural",
         "interviewee_voice": "en-US-JennyNeural",
         "google": {

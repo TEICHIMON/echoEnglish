@@ -90,6 +90,39 @@ class ParagraphCut(unittest.TestCase):
             cut_paragraph(audio, bounds)
 
 
+class DurationCrossCheck(unittest.TestCase):
+    """Landing every cut in silence is not enough.
+
+    A seam matched to the wrong pause also lands in silence — it just puts the
+    wrong sentence in the clip, and because the assignment is monotonic, every
+    later line shifts too. Measured on real English output: 11% of clips were
+    shifted this way and the silence check passed all of them. The model's own
+    per-line duration is the independent signal that catches it.
+    """
+
+    def test_shifted_assignment_is_rejected(self):
+        # three 1s bursts with pauses; claim the middle line is 3s long, which
+        # no correct cut of this audio can produce
+        audio, spans = paragraph([1000, 1000, 1000], pause_ms=600)
+        good = [(spans[0][0], spans[0][1]), (spans[0][1], spans[1][1]), (spans[1][1], spans[2][1])]
+        cut_paragraph(audio, good)  # sanity: the honest boundaries pass
+        lying = [(spans[0][0], spans[0][1]), (spans[0][1], spans[0][1] + 3000),
+                 (spans[0][1] + 3000, spans[2][1])]
+        with self.assertRaises(ElevenLabsError) as cm:
+            cut_paragraph(audio, lying)
+        self.assertIn("model says", str(cm.exception))
+
+    def test_model_clock_is_rescaled_onto_the_audio(self):
+        # English v3 returns audio up to 12% longer than its own timings claim.
+        # The same boundaries compressed by 10% must still cut correctly.
+        audio, spans = paragraph([900, 1200, 700], pause_ms=600)
+        honest = [(spans[0][0], spans[0][1]), (spans[0][1], spans[1][1]), (spans[1][1], spans[2][1])]
+        squeezed = [(int(s * 0.9), int(e * 0.9)) for s, e in honest]
+        a = cut_paragraph(audio, honest)
+        b = cut_paragraph(audio, squeezed)
+        self.assertEqual([len(x) for x in a], [len(x) for x in b])
+
+
 class ResponseChecks(unittest.TestCase):
     def _resp(self, segs):
         return {"voice_segments": segs}
