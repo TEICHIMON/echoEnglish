@@ -86,8 +86,10 @@ tts:
       google: "ja-JP-Chirp3-HD-Charon"        # Japanese — male persona
       edge:   "ja-JP-NanamiNeural"
       elevenlabs: "8EkOjt4xTPGMclNlh1pk"      # Morioki — conversational female (2026-09-09 pick)
-    en:
-      elevenlabs: "UgBBYS2sOqTuMpoF3BR0"      # Mark - Natural Conversations (2026-09-09 pick)
+    en:                                       # English stays on Google: the same
+      # script costs ~2x in credits in English (7,745 chars vs 3,730 for Japanese).
+      # To put English on ElevenLabs, uncomment the next line:
+      # elevenlabs: "UgBBYS2sOqTuMpoF3BR0"    # Mark - Natural Conversations
       google: "en-US-Chirp3-HD-Puck"          # English — distinct persona from ja
       edge:   "en-US-JennyNeural"
 
@@ -218,9 +220,10 @@ interview:
       openai:
         interviewer_voice: "echo"
         interviewee_voice: "coral"
-      elevenlabs:                              # 2026-09-09 pick; A reuses the text voice
-        interviewer_voice: "56AoDkrOh6qfVPDXZ7Pt"   # Cassidy - Crisp, Direct and Clear
-        interviewee_voice: "UgBBYS2sOqTuMpoF3BR0"   # Mark - Natural Conversations
+      # elevenlabs: English stays on Google (see lang_presets). To re-enable:
+      # elevenlabs:
+      #   interviewer_voice: "56AoDkrOh6qfVPDXZ7Pt"  # Cassidy - Crisp, Direct and Clear
+      #   interviewee_voice: "UgBBYS2sOqTuMpoF3BR0"  # Mark - Natural Conversations
     ja:
       interviewer_voice: "ja-JP-KeitaNeural"
       interviewee_voice: "ja-JP-NanamiNeural"

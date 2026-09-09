@@ -255,6 +255,18 @@ BOUNDARY_WINDOW_MS = 2500   # how far a pause may sit from the model's seam time
 EDGE_PAD_MS = 200           # silence kept before the first / after the last
                             # sound of a line (same figure as the splitter)
 
+# The model's absolute timings drift against the audio it returns, and the drift
+# is language-dependent: measured over 133 Japanese and 113 English clips, the
+# Japanese audio matched voice_segments exactly (ratio 1.000) while the English
+# audio ran up to 12% longer than the model claimed (median 1.042). Matching a
+# seam to the nearest pause by absolute time therefore drifted on English and,
+# because the assignment is monotonic, one wrong pick shifted every line after
+# it. Seam times are rescaled by (audio length / model total) before matching:
+# that removed 11 of the 12 English misalignments and changed nothing on
+# Japanese. The 12th is caught by the duration check below.
+DURATION_TOLERANCE_MS = 400   # absolute floor for the per-line duration check
+DURATION_TOLERANCE_REL = 0.35 # ... or this fraction of the line's own length
+
 
 def _frame_dbfs(audio: AudioSegment):
     import numpy as np
@@ -382,7 +394,12 @@ def cut_paragraph(
         (a, b) for (a, b) in runs if a > 0 and b < n - 1
     ]
 
-    seam_times = [e for (_, e) in boundaries[:-1]]  # model seam k|k+1
+    # Rescale the model's clock onto the audio's before matching (see the note
+    # by DURATION_TOLERANCE_MS): English v3 returns audio up to 12% longer than
+    # its own timings say, which walks a seam onto the wrong pause.
+    model_total = boundaries[-1][1]
+    scale = (len(audio) / model_total) if model_total > 0 else 1.0
+    seam_times = [int(e * scale) for (_, e) in boundaries[:-1]]
     chosen = assign_seams(seams_available, seam_times)
 
 
@@ -406,6 +423,19 @@ def cut_paragraph(
         if (sf > 0 and mask[sf]) or (ef < n and mask[ef - 1]):
             raise ElevenLabsError(f"cut of line {k} is not in silence")  # pragma: no cover
         clips.append(audio[sf * FRAME_MS: ef * FRAME_MS])
+
+    # Landing every cut in silence is not enough: a seam matched to the wrong
+    # pause also lands in silence, it just puts the wrong sentence in the clip.
+    # The model's own per-line duration is the independent check — a shifted
+    # assignment shows up immediately as a clip far too short or too long.
+    for k, (clip, (s_ms, e_ms)) in enumerate(zip(clips, boundaries)):
+        expected = (e_ms - s_ms) * scale
+        tol = max(DURATION_TOLERANCE_MS, DURATION_TOLERANCE_REL * expected)
+        if abs(len(clip) - expected) > tol:
+            raise ElevenLabsError(
+                f"line {k} is {len(clip)} ms but the model says {expected:.0f} ms "
+                f"(tolerance {tol:.0f} ms) — the seams are matched to the wrong pauses"
+            )
     return clips
 
 
