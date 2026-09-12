@@ -14,12 +14,17 @@ and check:
   E. local time-stretch changes duration by the requested factor
 """
 
+import json
 import shutil
+import tempfile
+import time
 import unittest
+from pathlib import Path
 
 from pydub import AudioSegment
 from pydub.generators import Sine
 
+import audio.elevenlabs_tts as el
 from audio.elevenlabs_tts import (
     BOUNDARY_WINDOW_MS,
     ElevenLabsError,
@@ -28,6 +33,7 @@ from audio.elevenlabs_tts import (
     boundaries_from_response,
     cut_paragraph,
     plan_chunks,
+    reject_store,
     time_stretch,
 )
 from audio.splitter import FRAME_MS, speech_mask
@@ -111,6 +117,27 @@ class DurationCrossCheck(unittest.TestCase):
         with self.assertRaises(ElevenLabsError) as cm:
             cut_paragraph(audio, lying)
         self.assertIn("model says", str(cm.exception))
+
+    def test_long_pause_is_not_mistaken_for_a_misalignment(self):
+        """A correct cut must survive material whose pauses run long.
+
+        The model's spans are contiguous, so span(k) contains the pause that
+        follows line k while the clip keeps only EDGE_PAD_MS of it. Comparing
+        TOTAL durations therefore penalised long pauses: on 2026-09-12 this
+        rejected 5 of 36 paragraphs (~800 credits of needless regeneration) on a
+        script whose inter-line pauses averaged 1210 ms, and 30 of its accepted
+        clips sat within 500 ms of the same fate. Counting speech on both sides
+        cancels the pause. A 2.5 s pause is well past what the old check allowed.
+        """
+        audio, spans = paragraph([1000, 1000, 1000], pause_ms=2500)
+        bounds = [(spans[0][0], spans[1][0]),
+                  (spans[1][0], spans[2][0]),
+                  (spans[2][0], spans[2][1])]
+        clips = cut_paragraph(audio, bounds)
+        self.assertEqual(len(clips), 3)
+        # each clip holds its own 1 s burst plus the pads, not the pause
+        for clip in clips:
+            self.assertLess(abs(len(clip) - 1400), 300)
 
     def test_model_clock_is_rescaled_onto_the_audio(self):
         # English v3 returns audio up to 12% longer than its own timings claim.
@@ -219,3 +246,68 @@ class TimeStretch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RejectedAttemptIsKept(unittest.TestCase):
+    """A rejected paragraph must leave evidence behind.
+
+    On 2026-09-12 five paragraphs were rejected and the audio was already gone
+    by the time anyone looked — the temp file is overwritten by the retry — so
+    the cause had to be guessed from the paragraphs that succeeded. The model's
+    ``voice_segments`` is the part that cannot be recovered from the audio, so
+    it is the part that must be on disk.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = el.REJECT_DIR
+        el.REJECT_DIR = Path(self._dir)
+        self.addCleanup(setattr, el, "REJECT_DIR", self._saved)
+        self.addCleanup(shutil.rmtree, self._dir, True)
+        self.raw = Path(self._dir) / "src.mp3"
+        tone(300).export(self.raw, format="mp3").close()
+        self.chunk = _Chunk(indices=[7, 8], texts=["あ。", "い。"], voice_ids=["v1", "v1"])
+
+    def _resp(self):
+        return {"voice_segments": [{"start_time_seconds": 0.0, "end_time_seconds": 1.0}],
+                "character_cost": 42}
+
+    def test_audio_and_alignment_are_written(self):
+        out = reject_store(self.raw, self._resp(), self.chunk, 3, 1, 99,
+                           ElevenLabsError("line 0 holds 1000 ms of speech"))
+        self.assertIsNotNone(out)
+        self.assertTrue(out.exists(), "rejected audio was not kept")
+        meta = json.loads(out.with_suffix(".json").read_text())
+        self.assertEqual(meta["paragraph"], 3)
+        self.assertEqual(meta["attempt"], 1)
+        self.assertEqual(meta["seed"], 99)
+        self.assertEqual(meta["lines"], [7, 8])
+        self.assertEqual(meta["texts"], ["あ。", "い。"])
+        self.assertIn("1000 ms of speech", meta["error"])
+        # the irrecoverable part
+        self.assertEqual(meta["voice_segments"], self._resp()["voice_segments"])
+
+    def test_pruned_to_the_newest_and_pairs_stay_together(self):
+        el_keep = el.REJECT_KEEP
+        el.REJECT_KEEP = 3
+        self.addCleanup(setattr, el, "REJECT_KEEP", el_keep)
+        for i in range(6):
+            reject_store(self.raw, self._resp(), self.chunk, i, 1, i,
+                         ElevenLabsError(f"err{i}"))
+            time.sleep(0.01)  # distinct mtimes
+        mp3s = sorted(Path(self._dir).glob("*.mp3"))
+        jsons = sorted(Path(self._dir).glob("*.json"))
+        self.assertEqual(len(jsons), 3, "not pruned to REJECT_KEEP")
+        self.assertEqual(len(mp3s), 3 + 1, "mp3 orphaned or source removed")  # +1 = src.mp3
+        kept = {json.loads(f.read_text())["paragraph"] for f in jsons}
+        self.assertEqual(kept, {3, 4, 5}, "pruned the wrong ones")
+        for f in jsons:
+            self.assertTrue(f.with_suffix(".mp3").exists(), "json left without its audio")
+
+    def test_a_save_failure_never_raises(self):
+        el.REJECT_DIR = Path("/dev/null/not-a-dir")   # mkdir will fail
+        self.assertIsNone(
+            reject_store(self.raw, self._resp(), self.chunk, 0, 1, 0,
+                         ElevenLabsError("boom"))
+        )
+

@@ -263,9 +263,29 @@ EDGE_PAD_MS = 200           # silence kept before the first / after the last
 # because the assignment is monotonic, one wrong pick shifted every line after
 # it. Seam times are rescaled by (audio length / model total) before matching:
 # that removed 11 of the 12 English misalignments and changed nothing on
-# Japanese. The 12th is caught by the duration check below.
-DURATION_TOLERANCE_MS = 400   # absolute floor for the per-line duration check
-DURATION_TOLERANCE_REL = 0.35 # ... or this fraction of the line's own length
+# Japanese. The 12th is caught by the speech cross-check below.
+# The clip-vs-model check counts SOUND frames on both sides rather than total
+# duration. Comparing total durations was biased: the model's per-line spans are
+# contiguous, so span(k) swallows the pause FOLLOWING line k, while the clip
+# deliberately keeps only EDGE_PAD_MS of it. Measured over the 50 cached
+# paragraphs (488 clips, two scripts) the clip therefore ran short by a median
+# 789 ms and the shortfall tracked the pause length (r = +0.69) — so material
+# whose pauses ran long was rejected for having perfectly correct cuts. That is
+# what happened on 2026-09-12: 5 of 36 paragraphs were regenerated (~800 wasted
+# credits) on a script whose inter-line pauses averaged 1210 ms against the
+# 650 ms of the 2026-09-09 material this check was first tuned on, and 30 of its
+# 355 accepted clips sat within 500 ms of the same false rejection.
+#
+# Counting speech on both sides removes the pause from both. The separation is
+# then clean and ABSOLUTE: a correct assignment's speech error is bounded by the
+# model's own boundary imprecision (up to ~1 s early) and never exceeded 1150 ms,
+# while shifting every seam to the next pause never scored below 1730 ms. The cap
+# sits in that gap and holds 0 false rejections / 29 of 29 shifts caught anywhere
+# in 1300-1500 ms, so it is not balanced on a single fitted point. The relative
+# term keeps power on SHORT lines, where a shift displaces less speech.
+SPEECH_TOLERANCE_MS = 400        # absolute floor
+SPEECH_TOLERANCE_REL = 0.6       # ... or this fraction of the line's own speech
+SPEECH_TOLERANCE_CAP_MS = 1400   # ... but never more than this
 
 
 def _frame_dbfs(audio: AudioSegment):
@@ -395,7 +415,7 @@ def cut_paragraph(
     ]
 
     # Rescale the model's clock onto the audio's before matching (see the note
-    # by DURATION_TOLERANCE_MS): English v3 returns audio up to 12% longer than
+    # by SPEECH_TOLERANCE_CAP_MS): English v3 returns audio up to 12% longer than
     # its own timings say, which walks a seam onto the wrong pause.
     model_total = boundaries[-1][1]
     scale = (len(audio) / model_total) if model_total > 0 else 1.0
@@ -426,15 +446,25 @@ def cut_paragraph(
 
     # Landing every cut in silence is not enough: a seam matched to the wrong
     # pause also lands in silence, it just puts the wrong sentence in the clip.
-    # The model's own per-line duration is the independent check — a shifted
-    # assignment shows up immediately as a clip far too short or too long.
-    for k, (clip, (s_ms, e_ms)) in enumerate(zip(clips, boundaries)):
-        expected = (e_ms - s_ms) * scale
-        tol = max(DURATION_TOLERANCE_MS, DURATION_TOLERANCE_REL * expected)
-        if abs(len(clip) - expected) > tol:
+    # The independent check is how much SPEECH the clip holds against how much
+    # speech sits inside the model's own span for that line. Both sides count
+    # sound frames only, so the inter-line pause — which the model's span
+    # includes and the clip drops — cancels instead of biasing the comparison
+    # (see the note by SPEECH_TOLERANCE_CAP_MS).
+    for k, (sf, ef, (s_ms, e_ms)) in enumerate(zip(starts, ends, boundaries)):
+        a = max(0, min(n, int(s_ms * scale) // FRAME_MS))
+        b = max(0, min(n, int(e_ms * scale) // FRAME_MS))
+        expected = int(mask[a:b].sum()) * FRAME_MS
+        actual = int(mask[sf:ef].sum()) * FRAME_MS
+        tol = min(
+            SPEECH_TOLERANCE_CAP_MS,
+            max(SPEECH_TOLERANCE_MS, SPEECH_TOLERANCE_REL * expected),
+        )
+        if abs(actual - expected) > tol:
             raise ElevenLabsError(
-                f"line {k} is {len(clip)} ms but the model says {expected:.0f} ms "
-                f"(tolerance {tol:.0f} ms) — the seams are matched to the wrong pauses"
+                f"line {k} holds {actual} ms of speech but the model says "
+                f"{expected} ms (tolerance {tol:.0f} ms) — the seams are matched "
+                f"to the wrong pauses"
             )
     return clips
 
@@ -504,6 +534,74 @@ def cache_store(key: str, raw: Path, bounds: list[tuple[int, int]], chunk: _Chun
         )
     except Exception as e:  # a cache problem must never fail a run
         logger.warning(f"ElevenLabs cache write failed: {e}")
+
+
+# A rejected attempt is thrown away by design — bad audio must never reach the
+# cache. But that left nothing to diagnose WITH: on 2026-09-12 five paragraphs
+# were rejected, and by the time anyone looked, the audio was gone (the temp file
+# is overwritten by the retry) and the model's alignment with it. The cause had
+# to be reconstructed from the paragraphs that SUCCEEDED, which is how a wrong
+# explanation got proposed first. So the rejected attempt is kept now.
+#
+# Kept by default, not behind a flag: these failures are unpredictable, and an
+# env var you have to set in advance is useless the first time one happens.
+# ``voice_segments`` is the part that matters most — the cut is derived from it
+# and it cannot be recovered from the audio afterwards.
+REJECT_DIR = Path(os.environ.get("ELEVENLABS_REJECT_DIR") or (CACHE_DIR / "rejected"))
+REJECT_KEEP = 30   # newest rejected attempts kept; ~1 MB each
+
+
+def _prune_rejects() -> None:
+    """Keep only the newest REJECT_KEEP attempts, mp3 + json together."""
+    metas = sorted(
+        REJECT_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True
+    )
+    for old in metas[REJECT_KEEP:]:
+        old.with_suffix(".mp3").unlink(missing_ok=True)
+        old.unlink(missing_ok=True)
+
+
+def reject_store(
+    raw: Path,
+    resp: dict,
+    chunk: _Chunk,
+    ci: int,
+    attempt: int,
+    seed: int,
+    err: Exception,
+) -> Path | None:
+    """Keep one rejected attempt so the next occurrence is diagnosable.
+
+    Returns the saved audio path, or None if nothing could be written.
+    """
+    try:
+        REJECT_DIR.mkdir(parents=True, exist_ok=True)
+        stem = f"{time.strftime('%Y%m%d_%H%M%S')}_p{ci:03d}_a{attempt}"
+        mp3 = REJECT_DIR / f"{stem}.mp3"
+        import shutil
+        shutil.copy(raw, mp3)
+        (REJECT_DIR / f"{stem}.json").write_text(
+            json.dumps(
+                {
+                    "error": str(err),
+                    "paragraph": ci,
+                    "attempt": attempt,
+                    "seed": seed,
+                    "lines": chunk.indices,
+                    "texts": chunk.texts,
+                    "voice_ids": chunk.voice_ids,
+                    "voice_segments": resp.get("voice_segments"),
+                    "character_cost": resp.get("character_cost"),
+                },
+                ensure_ascii=False,
+                indent=1,
+            )
+        )
+        _prune_rejects()
+        return mp3
+    except Exception as e:  # diagnostics must never fail an already-paid run
+        logger.warning(f"ElevenLabs rejected-attempt save failed: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -586,10 +684,12 @@ def generate_elevenlabs_target_audio(
                 cache_store(key, raw, bounds, chunk)
             except ElevenLabsError as e:
                 last_err = e
+                kept = reject_store(raw, resp, chunk, ci, attempt, seed, e)
                 logger.warning(
                     f"⟳ ElevenLabs paragraph {ci} (lines "
                     f"{chunk.indices[0]}–{chunk.indices[-1]}) failed boundary "
                     f"verification, regenerating ({attempt}/{MAX_REGENERATE + 1}): {e}"
+                    + (f"\n      rejected attempt kept at {kept}" if kept else "")
                 )
                 seed = random.randint(0, 2**31 - 1)
                 continue
