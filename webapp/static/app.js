@@ -374,6 +374,13 @@ function spokenQ() {
   return $("spokenQ").checked && !$("spokenQField").classList.contains("hidden");
 }
 
+// Every line must be a finished sentence (2026-09-13). ElevenLabs v3 does not
+// pause at an unfinished line — 「、」-ending lines got a median 345 ms pause
+// against 1155 ms for 。 — so the paragraph cut takes a comma pause inside the
+// neighbouring line and the clause lands in the wrong clip. Shared by all
+// prompt variants; the interview-notes /audio command carries the same rule.
+const completeLineRule = `- 每一行都必须是一个说完的完整句子，以句号或问号收尾：日语行不能以「、」或 て / ので / けど / が / し 这类接续结尾，英语行不能以逗号或 and / but / so / because 结尾；一句话太长就改写成两个各自完整的短句，绝不能在句子中间断行（TTS 对没说完的句子不停顿，切片会切错）`;
+
 function buildPrompt(mode) {
   const L = langWord();
   const langCode = $("lang").value || currentDefaultLang();
@@ -550,6 +557,7 @@ function buildPrompt(mode) {
         `- 英语和日语互为翻译，两列中文与它们同义`,
         qFormatRule,
         `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
+      completeLineRule,
         `- 英语、日语都要适合朗读：口语化、节奏清楚`,
         jaFuriganaRule,
         jaNaturalRule,
@@ -596,6 +604,7 @@ function buildPrompt(mode) {
       `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
       qFormatRule,
       `- 每条 A 控制在 1 句、只讲一个要点，短到适合逐句跟读；要答得全靠「多条 A」，而不是把单条写长`,
+      completeLineRule,
       `- ${L}部分要适合朗读：口语化、节奏清楚`,
       jaFuriganaSingle,
       jaNaturalSingle,
@@ -626,6 +635,7 @@ function buildPrompt(mode) {
       `要求：`,
       `- 分隔符必须是三个竖线 |||，顺序固定为 英语|||日语|||中文(对英)|||中文(对日)，共四列`,
       `- 每行一个完整短句，必须独占一行，不要换行续写`,
+    completeLineRule,
       `- 英语和日语互为翻译、长度大致相当，两列中文与它们同义`,
       `- 英语、日语都要自然口语化，适合朗读和影子跟读`,
       jaFuriganaRule,
@@ -653,6 +663,7 @@ function buildPrompt(mode) {
     `要求：`,
     `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
     `- 每行一个完整短句，必须独占一行，不要换行续写`,
+    completeLineRule,
     `- 左右两边都不能包含 |||`,
     `- ${L}部分要自然口语化，适合朗读和影子跟读`,
     jaFuriganaSingle,
@@ -733,6 +744,7 @@ function buildLecturePrompt(dual, L, langCode, rules) {
       : `- 分隔符必须是三个竖线 |||，左边${L}、右边简体中文`,
     dual ? `- 英语和日语互为翻译，两列中文与它们同义` : null,
     `- 每行一个完整句子，必须独占一行，不要换行续写`,
+    completeLineRule,
     `- ${dual ? "英语、日语都要" : `${L}要`}口语化、节奏清楚，像在讲话，不是在念书`,
     dual || langCode === "ja" ? rules.jaFuriganaRule : null,
     dual || langCode === "ja" ? rules.jaNaturalRule : null,

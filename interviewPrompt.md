@@ -14,6 +14,7 @@ Rules:
 - Put 1-5 A lines after each Q.
 - Use 1-2 A lines for a simple answer. Use 3-5 A lines when a complex answer needs a mechanism, trade-off, boundary, or example.
 - Each A line must contain one spoken sentence with one main idea. Keep it independently understandable.
+- Every Q and A line must be a complete sentence that ends with a period or question mark. Never break one sentence across lines: a line must not end with a comma or a connector such as and, but, so, or because. If a sentence runs long, rewrite it as two complete short sentences. (TTS does not pause at an unfinished line, so the audio gets cut in the wrong place.)
 - English A lines should normally contain 10-16 words and never exceed 18 words. A simple idea may be shorter.
 - A sentence may contain one simple cause, condition, time, or contrast clause, using common connectors such as because, if, when, while, or although.
 - Do not use nested clauses or long relative clauses.

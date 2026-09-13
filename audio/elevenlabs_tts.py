@@ -109,29 +109,62 @@ def plan_chunks(
     voice_ids: list[str],
     max_lines: int = DEFAULT_MAX_CHUNK_LINES,
     max_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+    cached=None,
 ) -> list[_Chunk]:
     """Group consecutive lines into paragraphs.
 
     Lines stay in script order (the whole point is giving v3 the surrounding
     context). A single over-long line gets a chunk of its own rather than being
     split — one subtitle must map to one input.
+
+    ``cached`` is an optional predicate ``(_Chunk) -> bool`` saying whether a
+    paragraph is already paid for (see the cache below). With it, boundaries
+    are chosen to REUSE cached paragraphs: the cache key is the exact line
+    set, so after a script edit that inserts or removes a line, fixed 10-line
+    blocks drift off every cached paragraph after the edit and the whole
+    script is re-synthesised (2026-09-13: an aborted re-run of a 298-line
+    script re-requested paragraphs 3+ for nothing — 548 credits gone, and a
+    full miss would have been ~9,000). The plan is a small DP over line
+    positions minimising (characters to synthesise, number of paragraphs);
+    without ``cached`` every paragraph is fresh and the result is the plain
+    max-length grouping. Lines between two cached paragraphs become a
+    fresh paragraph of their own, however short — that is the price of the
+    edit, and cheaper than re-buying the neighbours.
     """
+    n = len(texts)
+    if n == 0:
+        return []
+
+    def chunk_at(i: int, length: int) -> _Chunk:
+        return _Chunk(
+            list(range(i, i + length)),
+            list(texts[i:i + length]),
+            list(voice_ids[i:i + length]),
+        )
+
+    INF = (float("inf"), float("inf"))
+    best: list[tuple[float, float]] = [INF] * (n + 1)
+    best[n] = (0.0, 0.0)
+    choice = [0] * n
+    for i in range(n - 1, -1, -1):
+        chars = 0
+        for length in range(1, min(max_lines, n - i) + 1):
+            chars += len(texts[i + length - 1])
+            if length > 1 and chars > max_chars:
+                break
+            tail = best[i + length]
+            if tail == INF:
+                continue
+            fresh = 0 if (cached is not None and cached(chunk_at(i, length))) else chars
+            cost = (fresh + tail[0], 1 + tail[1])
+            # ties keep the longer paragraph (v3 wants context)
+            if cost < best[i] or (cost == best[i] and length > choice[i]):
+                best[i], choice[i] = cost, length
     chunks: list[_Chunk] = []
-    cur = _Chunk([], [], [])
-    cur_chars = 0
-    for i, (text, voice) in enumerate(zip(texts, voice_ids)):
-        if cur.indices and (
-            len(cur.indices) >= max_lines or cur_chars + len(text) > max_chars
-        ):
-            chunks.append(cur)
-            cur = _Chunk([], [], [])
-            cur_chars = 0
-        cur.indices.append(i)
-        cur.texts.append(text)
-        cur.voice_ids.append(voice)
-        cur_chars += len(text)
-    if cur.indices:
-        chunks.append(cur)
+    i = 0
+    while i < n:
+        chunks.append(chunk_at(i, choice[i]))
+        i += choice[i]
     return chunks
 
 
@@ -251,19 +284,54 @@ SOUND_DBFS = -55.0          # frames above this are "sound" (keeps the quiet
 # both languages. 120 ms sits in that gap. Extra candidates (commas) are
 # harmless — the assignment below picks which run belongs to which seam.
 MIN_PAUSE_MS = 120
-BOUNDARY_WINDOW_MS = 2500   # how far a pause may sit from the model's seam time
 EDGE_PAD_MS = 200           # silence kept before the first / after the last
                             # sound of a line (same figure as the splitter)
 
-# The model's absolute timings drift against the audio it returns, and the drift
-# is language-dependent: measured over 133 Japanese and 113 English clips, the
-# Japanese audio matched voice_segments exactly (ratio 1.000) while the English
-# audio ran up to 12% longer than the model claimed (median 1.042). Matching a
-# seam to the nearest pause by absolute time therefore drifted on English and,
-# because the assignment is monotonic, one wrong pick shifted every line after
-# it. Seam times are rescaled by (audio length / model total) before matching:
-# that removed 11 of the 12 English misalignments and changed nothing on
-# Japanese. The 12th is caught by the speech cross-check below.
+# How the model's clock relates to the audio (measured 2026-09-13 on 32 Japanese
+# + 14 English cached paragraphs, 385 seams):
+#
+# - Inside a line the model's timeline matches the audio. Between lines the
+#   audio can be LONGER than the timeline — v3 inserts gaps that voice_segments
+#   does not count — so (audio position − model time) is an offset that only
+#   ever GROWS along a paragraph, in steps at line boundaries. It is not a
+#   uniform stretch: 17 of 32 Japanese paragraphs had zero total drift and one
+#   had 9.7%, and inside a drifting paragraph the first seams sat within 70 ms
+#   of their pauses while the later ones were 1.5–3.5 s off.
+# - The seam time itself lands anywhere INSIDE the right pause: the model
+#   books the pause to the line before or the line after, so consecutive seams
+#   sit at a pause end, then a pause start, without the offset changing.
+# - When the seam misses its pause it is EARLY (documented up to ~1 s), inside
+#   the last word of the line. Late seams are rare and small (worst seen 380 ms).
+#
+# The previous version rescaled every seam by (audio length / model total) —
+# a uniform stretch — and on 2026-09-13 that pushed a seam that sat inside the
+# correct 1.26 s pause 1.4 s forward, next to the 150 ms comma pause of the
+# NEXT line ("寄せています。」‖「そのサーバーが落ちたら、"), which the nearest-pause
+# rule then took. The clause moved into the wrong clip and the speech check
+# below let it through: 1.1 s of speech is under its 1.4 s cap.
+#
+# So the assignment (assign_seams) tracks the offset instead of rescaling. A
+# run is feasible for seam k if the offset that puts the seam inside it is at
+# least the current offset (minus a little slack for a late seam); taking a run
+# further ahead is a JUMP that raises the offset for every later seam and costs
+# its size; a seam behind the run is tolerated up to SEAM_LATE_SLACK_MS but
+# costs SEAM_LATE_WEIGHT× — late is the rare direction, and pricing it like an
+# early seam let the DP buy a 310 ms late excursion into a comma pause instead
+# of a 1070 ms jump to the real one (b78a4916, seam 4; the male/female pitch of
+# the disputed second settled it). A third term keeps the audio span of a line
+# from exceeding the model's own span for it by more than jitter, since the
+# timeline never under-counts inside a line.
+#
+# Checked against pitch at the 59 Q↔A voice changes of the 2026-09-13 script
+# (the two voices are 130 Hz vs 250 Hz, so the second before and after each
+# chosen pause identifies the speaker): the rescaled DP had 1 wrong seam, this
+# one has 0; on the 14 English paragraphs the two agree on every seam.
+BOUNDARY_WINDOW_MS = 2500       # largest offset jump accepted at one seam
+SEAM_LATE_SLACK_MS = 800        # how far behind a pause a seam may sit
+SEAM_LATE_WEIGHT = 4            # ... and how dearly, per ms, relative to a jump
+SPAN_TOLERANCE_MS = 400         # a line's audio span may exceed the model's
+SPAN_TOLERANCE_REL = 0.08       # span by this much before it costs
+
 # The clip-vs-model check counts SOUND frames on both sides rather than total
 # duration. Comparing total durations was biased: the model's per-line spans are
 # contiguous, so span(k) swallows the pause FOLLOWING line k, while the clip
@@ -329,15 +397,33 @@ def silent_runs(mask, min_ms: int = MIN_PAUSE_MS) -> list[tuple[int, int]]:
 def assign_seams(
     runs: list[tuple[int, int]],
     seam_times_ms: list[int],
+    line_spans_ms: list[int] | None = None,
+    first_sound_ms: int = 0,
 ) -> list[tuple[int, int]]:
     """Match each model seam to its own silent run, in order, globally.
 
-    A greedy "nearest free run" walk fails on real paragraphs: extra candidates
-    (comma pauses) sit between the sentence pauses, and one early mis-pick makes
-    every later seam fail. This is a small dynamic program instead — it picks
-    the strictly increasing set of runs that minimises the total distance
-    between each seam's model time and its run, so a wrong local choice can be
-    paid back later. Distances beyond BOUNDARY_WINDOW_MS are refused outright.
+    ``seam_times_ms`` are the model's RAW end times of lines 0..K-2 (no
+    rescaling — see the note by BOUNDARY_WINDOW_MS for why). ``runs`` are the
+    candidate pauses in frames. ``line_spans_ms`` (the model's per-line span,
+    K entries) and ``first_sound_ms`` enable the span term; without them only
+    the offset terms apply (the unit tests use that form).
+
+    The state is (seam, run, offset). The offset — audio position minus model
+    time — starts at 0 and can only rise, so its value is always "the run
+    start minus the seam time of the last jump", which keeps the state small.
+    Cost of putting seam k in run (a, b), with the offset d carried in:
+      - a - t_k <= d <= b - t_k : the seam sits inside the run; free
+      - a - t_k >  d            : jump; d becomes a - t_k; costs the jump,
+                                  refused beyond BOUNDARY_WINDOW_MS
+      - b - t_k <  d            : the seam sits after the run (model late);
+                                  allowed up to SEAM_LATE_SLACK_MS and costs
+                                  SEAM_LATE_WEIGHT per ms; d is unchanged
+    plus, when spans are given, the amount by which the audio between the
+    previous run and this one exceeds the model's span for the line.
+    A greedy nearest-run walk would fail here for the same reason it did
+    before: comma pauses sit between the real ones and one early mis-pick
+    strands every later seam. The DP pays a local cost to keep the whole
+    assignment consistent.
     """
     n_seams, n_runs = len(seam_times_ms), len(runs)
     if n_seams == 0:
@@ -347,46 +433,64 @@ def assign_seams(
             f"only {n_runs} pause(s) >= {MIN_PAUSE_MS} ms for {n_seams} seam(s); "
             f"the model ran two lines together"
         )
-    w = BOUNDARY_WINDOW_MS // FRAME_MS
-    INF = float("inf")
+    if line_spans_ms is not None and len(line_spans_ms) != n_seams + 1:
+        raise ValueError("line_spans_ms must have one entry per line")
 
-    def dist(k: int, ri: int) -> float:
-        a, b = runs[ri]
-        t = seam_times_ms[k] // FRAME_MS
-        d = 0 if a <= t <= b else min(abs(t - a), abs(t - b))
-        return INF if d > w else float(d)
+    def offset_of(origin) -> int:
+        # origin = (seam, run) of the last jump; None = no jump yet
+        if origin is None:
+            return 0
+        return runs[origin[1]][0] * FRAME_MS - seam_times_ms[origin[0]]
 
-    # best[k][r] = min total cost assigning seams 0..k using runs 0..r, seam k -> run r
-    best = [[INF] * n_runs for _ in range(n_seams)]
-    back = [[-1] * n_runs for _ in range(n_seams)]
+    def span_cost(k: int, r_prev: int | None, r: int) -> float:
+        if line_spans_ms is None:
+            return 0.0
+        start = (runs[r_prev][1] + 1) * FRAME_MS if r_prev is not None else first_sound_ms
+        span = runs[r][0] * FRAME_MS - start
+        allowed = line_spans_ms[k] + SPAN_TOLERANCE_MS + SPAN_TOLERANCE_REL * line_spans_ms[k]
+        return max(0.0, span - allowed)
+
+    # best[k][(run, origin)] = (cost, previous key)
+    best: list[dict] = [dict() for _ in range(n_seams)]
+
+    def relax(k: int, r: int, origin, cost: float, prev_key, r_prev: int | None) -> None:
+        d = offset_of(origin)
+        lo = runs[r][0] * FRAME_MS - seam_times_ms[k]
+        hi = runs[r][1] * FRAME_MS - seam_times_ms[k]
+        cost += span_cost(k, r_prev, r)
+        if hi < d - SEAM_LATE_SLACK_MS:
+            return
+        if lo > d:
+            if lo - d > BOUNDARY_WINDOW_MS:
+                return
+            key, cost = (r, (k, r)), cost + (lo - d)
+        else:
+            key, cost = (r, origin), cost + SEAM_LATE_WEIGHT * max(0, d - hi)
+        cur = best[k].get(key)
+        if cur is None or cost < cur[0]:
+            best[k][key] = (cost, prev_key)
+
     for r in range(n_runs):
-        best[0][r] = dist(0, r)
+        relax(0, r, None, 0.0, None, None)
     for k in range(1, n_seams):
-        run_min, run_arg = INF, -1
-        for r in range(n_runs):
-            if r >= 1:  # best predecessor among runs < r
-                if best[k - 1][r - 1] < run_min:
-                    run_min, run_arg = best[k - 1][r - 1], r - 1
-            d = dist(k, r)
-            if d < INF and run_min < INF:
-                best[k][r] = run_min + d
-                back[k][r] = run_arg
-    last = min(range(n_runs), key=lambda r: best[n_seams - 1][r])
-    if best[n_seams - 1][last] == INF:
-        worst = max(
-            range(n_seams),
-            key=lambda k: min(dist(k, r) for r in range(n_runs)),
-        )
+        for (r_prev, origin), (cost, _) in best[k - 1].items():
+            for r in range(r_prev + 1, n_runs):
+                relax(k, r, origin, cost, (r_prev, origin), r_prev)
+        if not best[k]:
+            break
+    if not best[n_seams - 1]:
+        stuck = next(k for k in range(n_seams) if not best[k])
         raise ElevenLabsError(
-            f"no pause >= {MIN_PAUSE_MS} ms within {BOUNDARY_WINDOW_MS} ms of the "
-            f"seam between lines {worst} and {worst + 1} "
-            f"(model {seam_times_ms[worst]} ms)"
+            f"no pause >= {MIN_PAUSE_MS} ms fits the seam between lines {stuck} "
+            f"and {stuck + 1} (model {seam_times_ms[stuck]} ms) consistently with "
+            f"the seams before it"
         )
-    picked = [0] * n_seams
+    key = min(best[n_seams - 1], key=lambda x: best[n_seams - 1][x][0])
+    picked: list[int] = []
     for k in range(n_seams - 1, -1, -1):
-        picked[k] = last
-        last = back[k][last]
-    return [runs[r] for r in picked]
+        picked.append(key[0])
+        key = best[k][key][1]
+    return [runs[r] for r in picked[::-1]]
 
 
 def cut_paragraph(
@@ -396,9 +500,10 @@ def cut_paragraph(
     """Cut one paragraph into per-line clips at verified inter-line pauses.
 
     ``boundaries`` are the model's contiguous (start_ms, end_ms) per line. For
-    each seam between line k and k+1 the long silent run nearest to the
-    model's seam time (within BOUNDARY_WINDOW_MS) is chosen; runs must be
-    distinct and in script order. Line k then ends EDGE_PAD_MS into that run
+    each seam between line k and k+1 a long silent run is chosen by
+    ``assign_seams`` (the model's seam time plus a tracked offset must fall
+    inside it); runs must be distinct and in script order. Line k then ends
+    EDGE_PAD_MS into that run
     and line k+1 starts EDGE_PAD_MS before the run ends — pads only ever eat
     silence. The paragraph edges use the leading / trailing silence the same
     way. Every clip therefore starts and ends in verified silence, and a
@@ -414,18 +519,24 @@ def cut_paragraph(
         (a, b) for (a, b) in runs if a > 0 and b < n - 1
     ]
 
-    # Rescale the model's clock onto the audio's before matching (see the note
-    # by SPEECH_TOLERANCE_CAP_MS): English v3 returns audio up to 12% longer than
-    # its own timings say, which walks a seam onto the wrong pause.
-    model_total = boundaries[-1][1]
-    scale = (len(audio) / model_total) if model_total > 0 else 1.0
-    seam_times = [int(e * scale) for (_, e) in boundaries[:-1]]
-    chosen = assign_seams(seams_available, seam_times)
-
-
     pad = EDGE_PAD_MS // FRAME_MS
     first_sound = int(mask.argmax())
     last_sound = n - 1 - int(mask[::-1].argmax())
+
+    # Raw model times: the offset between the model's clock and the audio is
+    # tracked inside assign_seams (see the note by BOUNDARY_WINDOW_MS), not
+    # removed by rescaling — the drift is stepwise, not a uniform stretch.
+    chosen = assign_seams(
+        seams_available,
+        [e for (_, e) in boundaries[:-1]],
+        [e - s for (s, e) in boundaries],
+        first_sound * FRAME_MS,
+    )
+    # The speech cross-check below still compares against the model span on a
+    # uniformly rescaled clock; it is a coarse, independent guard (its
+    # tolerance is wider than any offset step seen) and was tuned that way.
+    model_total = boundaries[-1][1]
+    scale = (len(audio) / model_total) if model_total > 0 else 1.0
 
     starts = [max(0, first_sound - pad)]
     ends: list[int] = []
@@ -643,10 +754,17 @@ def generate_elevenlabs_target_audio(
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    chunks = plan_chunks(texts, voice_ids, max_lines, max_chars)
+    def _is_cached(chunk: _Chunk) -> bool:
+        k = cache_key(chunk, model_id, output_format, stability)
+        return (CACHE_DIR / f"{k}.mp3").exists() and (CACHE_DIR / f"{k}.json").exists()
+
+    chunks = plan_chunks(texts, voice_ids, max_lines, max_chars, cached=_is_cached)
+    n_cached = sum(1 for c in chunks if _is_cached(c))
+    fresh_chars = sum(len(t) for c in chunks if not _is_cached(c) for t in c.texts)
     logger.info(
         f"  ElevenLabs {model_id}: {len(texts)} lines in {len(chunks)} paragraph "
-        f"request(s), concurrency {concurrency}"
+        f"request(s), concurrency {concurrency}; {n_cached} cached, "
+        f"{len(chunks) - n_cached} to synthesise (~{fresh_chars} credits)"
     )
 
     results: dict[int, list[AudioSegment]] = {}
