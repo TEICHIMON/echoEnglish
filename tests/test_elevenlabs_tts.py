@@ -114,9 +114,11 @@ class DurationCrossCheck(unittest.TestCase):
         cut_paragraph(audio, good)  # sanity: the honest boundaries pass
         lying = [(spans[0][0], spans[0][1]), (spans[0][1], spans[0][1] + 3000),
                  (spans[0][1] + 3000, spans[2][1])]
-        with self.assertRaises(ElevenLabsError) as cm:
+        # the offset-tracking assignment refuses this before the speech check
+        # gets to see it (a 3 s line can't fit between these pauses); either
+        # rejection is the point — the paragraph must not be cut
+        with self.assertRaises(ElevenLabsError):
             cut_paragraph(audio, lying)
-        self.assertIn("model says", str(cm.exception))
 
     def test_long_pause_is_not_mistaken_for_a_misalignment(self):
         """A correct cut must survive material whose pauses run long.
@@ -139,7 +141,7 @@ class DurationCrossCheck(unittest.TestCase):
         for clip in clips:
             self.assertLess(abs(len(clip) - 1400), 300)
 
-    def test_model_clock_is_rescaled_onto_the_audio(self):
+    def test_model_clock_shorter_than_the_audio_still_cuts(self):
         # English v3 returns audio up to 12% longer than its own timings claim.
         # The same boundaries compressed by 10% must still cut correctly.
         audio, spans = paragraph([900, 1200, 700], pause_ms=600)
@@ -148,6 +150,53 @@ class DurationCrossCheck(unittest.TestCase):
         a = cut_paragraph(audio, honest)
         b = cut_paragraph(audio, squeezed)
         self.assertEqual([len(x) for x in a], [len(x) for x in b])
+
+
+class OffsetTracking(unittest.TestCase):
+    """The model's clock falls behind the audio in STEPS, not by a stretch.
+
+    v3 inserts gaps between lines that voice_segments does not count, so the
+    audio runs ahead of the model by an offset that only grows, at line
+    boundaries. Rescaling every seam by (audio / model total) spread one such
+    step over the whole paragraph and, on 2026-09-13, moved a seam that sat
+    inside the right 1.26 s pause forward onto the 150 ms comma pause of the
+    next line. The speech check passed it — the moved clause was shorter than
+    its cap. These tests pin the two behaviours the offset model buys.
+    """
+
+    def test_step_gap_later_in_the_paragraph_does_not_move_an_earlier_seam(self):
+        # line 0 | 1200 pause | line 1 = clause, 150 ms comma, rest | 1000 pause
+        # | 1500 ms gap the model does not count | line 2
+        audio = silence(50) + tone(3000) + silence(1200)
+        l1_start = len(audio)
+        audio += tone(1100) + silence(150) + tone(3000) + silence(1000)
+        audio += silence(1500) + tone(2000) + silence(50)
+        m0_end = l1_start                        # pause booked to line 0
+        m1_end = m0_end + 1100 + 150 + 3000 + 1000
+        bounds = [(50, m0_end), (m0_end, m1_end), (m1_end, m1_end + 2000)]
+        # sanity: the uniform rescale of the old code lands seam 0 past the pause
+        scale = len(audio) / bounds[-1][1]
+        self.assertGreater(m0_end * scale, l1_start + 400)
+        clips = cut_paragraph(audio, bounds)
+        # pads only eat silence: 50 ms of lead-in, 200 ms into the pause
+        self.assertLess(abs(len(clips[0]) - (3000 + 50 + 200)), 100)
+        self.assertLess(abs(len(clips[1]) - (1100 + 150 + 3000 + 400)), 100)
+
+    def test_early_seam_does_not_fall_back_onto_the_comma_behind_it(self):
+        # line 0 = 2000 speech, 200 ms comma, 1000 speech | 1000 pause | line 1.
+        # The model's seam is 750 ms EARLY (inside line 0's last word); the
+        # comma pause is only 250 ms behind it. Late is the rare direction and
+        # must cost more than a 750 ms jump forward.
+        audio = silence(50) + tone(2000) + silence(200) + tone(1000) + silence(1000) + tone(3000) + silence(50)
+        true_end = 50 + 2000 + 200 + 1000
+        seam = true_end - 750
+        bounds = [(50, seam), (seam, seam + 1000 + 3000)]
+        clips = cut_paragraph(audio, bounds)
+        self.assertLess(abs(len(clips[0]) - (2000 + 200 + 1000 + 50 + 200)), 100)
+        # and the plain assignment says the same without the span term:
+        # comma pause at frames 205-224, sentence pause at 325-424
+        runs = [(205, 224), (325, 424)]
+        self.assertEqual(assign_seams(runs, [seam]), [(325, 424)])
 
 
 class ResponseChecks(unittest.TestCase):
@@ -193,6 +242,27 @@ class ChunkPlanning(unittest.TestCase):
         texts = ["short", "y" * 3000, "short"]
         chunks = plan_chunks(texts, ["v"] * 3, max_lines=10, max_chars=2000)
         self.assertEqual([c.indices for c in chunks], [[0], [1], [2]])
+
+    def test_boundaries_follow_cached_paragraphs(self):
+        # A script that was voiced as 10-line blocks, then had two lines
+        # inserted at position 5. Fixed blocks would miss every cached
+        # paragraph after the edit; the plan re-uses them and pays only for
+        # the inserted lines (plus whatever fill it needs).
+        old = [f"line{i}" for i in range(30)]
+        cached_sets = {tuple(old[i:i + 10]) for i in range(0, 30, 10)}
+        new = old[:5] + ["new-a", "new-b"] + old[5:]
+        chunks = plan_chunks(new, ["v"] * len(new), max_lines=10, max_chars=10_000,
+                             cached=lambda c: tuple(c.texts) in cached_sets)
+        self.assertEqual([i for c in chunks for i in c.indices], list(range(len(new))))
+        fresh = [c.texts for c in chunks if tuple(c.texts) not in cached_sets]
+        # the two cached blocks after the edit are re-used verbatim
+        self.assertIn(tuple(old[10:20]), {tuple(c.texts) for c in chunks})
+        self.assertIn(tuple(old[20:30]), {tuple(c.texts) for c in chunks})
+        # and everything fresh is only the edited head (<= 12 lines, one or two paragraphs)
+        self.assertLessEqual(sum(len(t) for t in fresh), 12)
+        # without a cache the plan is the plain max-length grouping
+        plain = plan_chunks(new, ["v"] * len(new), max_lines=10, max_chars=10_000)
+        self.assertEqual([len(c.indices) for c in plain], [10, 10, 10, 2])
 
 
 class SeamAssignment(unittest.TestCase):

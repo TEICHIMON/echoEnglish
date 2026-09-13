@@ -85,7 +85,7 @@ tts:
     ja:
       google: "ja-JP-Chirp3-HD-Charon"        # Japanese — male persona
       edge:   "ja-JP-NanamiNeural"
-      elevenlabs: "8EkOjt4xTPGMclNlh1pk"      # Morioki — conversational female (2026-09-09 pick)
+      elevenlabs: "GKDaBI8TKSBJVhsCLD6n"      # Asahi - Calm and Natural, male (2026-09-13; was Morioki 8EkOjt4xTPGMclNlh1pk)
     en:                                       # English stays on Google: the same
       # script costs ~2x in credits in English (7,745 chars vs 3,730 for Japanese).
       # To put English on ElevenLabs, uncomment the next line:
@@ -233,6 +233,6 @@ interview:
       openai:
         interviewer_voice: "echo"
         interviewee_voice: "coral"
-      elevenlabs:                              # 2026-09-09 pick; A reuses the text voice
+      elevenlabs:                              # A reuses the text voice
         interviewer_voice: "8FuuqoKHuM48hIEwni5e"   # Shohei - Warm, Clear and Husky
-        interviewee_voice: "8EkOjt4xTPGMclNlh1pk"   # Morioki - Calm, Measured and Muffled
+        interviewee_voice: "GKDaBI8TKSBJVhsCLD6n"   # Asahi - Calm and Natural (2026-09-13; was Morioki 8EkOjt4xTPGMclNlh1pk)

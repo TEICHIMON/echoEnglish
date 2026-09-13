@@ -72,7 +72,7 @@ LANG_PRESETS: dict[str, dict[str, str]] = {
         # language needs its own native voice. Only Japanese is configured
         # (2026-09-09 decision): English keeps the engine it had. An engine of
         # "elevenlabs" with no voice for the language falls back to Google.
-        "elevenlabs": "8EkOjt4xTPGMclNlh1pk",  # Morioki — conversational female
+        "elevenlabs": "GKDaBI8TKSBJVhsCLD6n",  # Asahi — calm male (2026-09-13; was Morioki 8EkOjt4xTPGMclNlh1pk)
     },
     "en": {
         "google": "en-US-Chirp3-HD-Puck",     # distinct male persona from ja
@@ -99,7 +99,7 @@ INTERVIEW_LANG_PRESETS: dict[str, dict[str, object]] = {
         },
         "elevenlabs": {
             "interviewer_voice": "8FuuqoKHuM48hIEwni5e",  # Shohei — warm male
-            "interviewee_voice": "8EkOjt4xTPGMclNlh1pk",  # Morioki — female
+            "interviewee_voice": "GKDaBI8TKSBJVhsCLD6n",  # Asahi — calm male (2026-09-13; was Morioki)
         },
     },
     "en": {
