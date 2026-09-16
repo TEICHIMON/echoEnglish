@@ -6,9 +6,10 @@ exception that allows this requires every cut to be verified against the
 energy mask. These tests build synthetic paragraphs (tone bursts + silence)
 and check:
 
-  A. contiguous model boundaries with the pause booked to either side still
-     yield one clip per line whose edges are silent
-  B. a boundary inside continuous speech is rejected, not "fixed"
+  A. alignment marks (first / last character start per line) yield one clip
+     per line whose edges are silent, and a comma pause inside the next line
+     is never taken for the seam
+  B. two lines with no pause between them are rejected, not "fixed"
   C. the response cross-checks (count / order / character span)
   D. chunk planning keeps script order and respects both caps
   E. local time-stretch changes duration by the requested factor
@@ -26,10 +27,9 @@ from pydub.generators import Sine
 
 import audio.elevenlabs_tts as el
 from audio.elevenlabs_tts import (
-    BOUNDARY_WINDOW_MS,
     ElevenLabsError,
     _Chunk,
-    assign_seams,
+    alignment_marks,
     boundaries_from_response,
     cut_paragraph,
     plan_chunks,
@@ -61,142 +61,99 @@ def paragraph(speech_ms: list[int], pause_ms: int) -> tuple[AudioSegment, list[t
     return audio, spans
 
 
+def marks_for(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """What alignment_marks would say for tone bursts: the first character
+    starts with the burst, the last one starts ~100 ms before it ends."""
+    return [(s, max(s, e - 100)) for s, e in spans]
+
+
 class ParagraphCut(unittest.TestCase):
-    def _assert_edges_silent(self, audio, clips, bounds):
-        mask = speech_mask(audio)
-        self.assertEqual(len(clips), len(bounds))
+    """The seam between two lines is a silent run inside the alignment's
+    interval for it; nothing is read from the generator's clock any more."""
+
+    def _assert_edges_silent(self, clips, n):
+        self.assertEqual(len(clips), n)
         for clip in clips:
             m = speech_mask(clip)
             self.assertFalse(m[0], "clip starts inside speech")
             self.assertFalse(m[-1], "clip ends inside speech")
             self.assertTrue(m.any(), "clip has no speech at all")
 
-    def test_pause_booked_to_previous_line(self):
-        # like /with-timestamps: line k's end == line k+1's start, pause on the end side
+    def test_each_line_gets_its_own_burst(self):
         audio, spans = paragraph([900, 1200, 700], pause_ms=600)
-        bounds = [(spans[0][0], spans[1][0]), (spans[1][0], spans[2][0]), (spans[2][0], spans[2][1])]
-        clips = cut_paragraph(audio, bounds)
-        self._assert_edges_silent(audio, clips, bounds)
-        # each clip holds its own burst (± pads), not the neighbour's
+        clips = cut_paragraph(audio, marks_for(spans))
+        self._assert_edges_silent(clips, 3)
         for clip, (s, e) in zip(clips, spans):
             self.assertLess(abs(len(clip) - (e - s) - 400), 250)
 
-    def test_pause_booked_to_next_line(self):
-        # like /text-to-dialogue: the pause lands at the start of the next segment
+    def test_comma_pause_inside_the_next_line_is_not_taken(self):
+        """The failure the volume checks let through: line k+1 opens with a
+        short clause ("そこでやっと、"), and a seam that lands in that comma
+        pause moves the clause into clip k. The comma pause lies after k+1's
+        first character, so it is outside the seam's interval by construction."""
+        audio = (silence(50) + tone(1500) + silence(700)
+                 + tone(400) + silence(250) + tone(1200)     # line 1: clause, comma, rest
+                 + silence(700) + tone(1000) + silence(50))
+        l0 = (50, 1550); l1 = (2250, 2250 + 400 + 250 + 1200); l2 = (l1[1] + 700, l1[1] + 700 + 1000)
+        clips = cut_paragraph(audio, marks_for([l0, l1, l2]))
+        self._assert_edges_silent(clips, 3)
+        self.assertLess(abs(len(clips[0]) - 1500 - 400), 250)
+        self.assertLess(abs(len(clips[1]) - 1850 - 400), 250)   # clause + comma + rest
+        self.assertLess(abs(len(clips[2]) - 1000 - 400), 250)
+
+    def test_aligner_placing_the_onset_late_is_tolerated(self):
+        # the energy mask hears a consonant 100-200 ms before the aligner places
+        # the character; marks 200 ms late must still find the pause
         audio, spans = paragraph([900, 1200, 700], pause_ms=600)
-        bounds = [(spans[0][0], spans[0][1]), (spans[0][1], spans[1][1]), (spans[1][1], spans[2][1])]
-        clips = cut_paragraph(audio, bounds)
-        self._assert_edges_silent(audio, clips, bounds)
+        late = [(s + 200, e - 100) for s, e in spans]
+        clips = cut_paragraph(audio, late)
+        self._assert_edges_silent(clips, 3)
 
-    def test_boundary_inside_speech_is_rejected(self):
-        # one long burst with the "boundary" in the middle: nothing to back out to
-        audio = silence(50) + tone(3000) + silence(50)
-        bounds = [(50, 1500), (1500, 3050)]
+    def test_lines_run_together_are_rejected(self):
+        # 50 ms between two lines is a stop closure, not a pause: nothing to cut in
+        audio = silence(50) + tone(1500) + silence(50) + tone(1500) + silence(50)
         with self.assertRaises(ElevenLabsError):
-            cut_paragraph(audio, bounds)
+            cut_paragraph(audio, marks_for([(50, 1550), (1600, 3100)]))
 
-
-class DurationCrossCheck(unittest.TestCase):
-    """Landing every cut in silence is not enough.
-
-    A seam matched to the wrong pause also lands in silence — it just puts the
-    wrong sentence in the clip, and because the assignment is monotonic, every
-    later line shifts too. Measured on real English output: 11% of clips were
-    shifted this way and the silence check passed all of them. The model's own
-    per-line duration is the independent signal that catches it.
-    """
-
-    def test_shifted_assignment_is_rejected(self):
-        # three 1s bursts with pauses; claim the middle line is 3s long, which
-        # no correct cut of this audio can produce
-        audio, spans = paragraph([1000, 1000, 1000], pause_ms=600)
-        good = [(spans[0][0], spans[0][1]), (spans[0][1], spans[1][1]), (spans[1][1], spans[2][1])]
-        cut_paragraph(audio, good)  # sanity: the honest boundaries pass
-        lying = [(spans[0][0], spans[0][1]), (spans[0][1], spans[0][1] + 3000),
-                 (spans[0][1] + 3000, spans[2][1])]
-        # the offset-tracking assignment refuses this before the speech check
-        # gets to see it (a 3 s line can't fit between these pauses); either
-        # rejection is the point — the paragraph must not be cut
-        with self.assertRaises(ElevenLabsError):
-            cut_paragraph(audio, lying)
-
-    def test_long_pause_is_not_mistaken_for_a_misalignment(self):
-        """A correct cut must survive material whose pauses run long.
-
-        The model's spans are contiguous, so span(k) contains the pause that
-        follows line k while the clip keeps only EDGE_PAD_MS of it. Comparing
-        TOTAL durations therefore penalised long pauses: on 2026-09-12 this
-        rejected 5 of 36 paragraphs (~800 credits of needless regeneration) on a
-        script whose inter-line pauses averaged 1210 ms, and 30 of its accepted
-        clips sat within 500 ms of the same fate. Counting speech on both sides
-        cancels the pause. A 2.5 s pause is well past what the old check allowed.
-        """
+    def test_long_pauses_are_not_kept_in_the_clip(self):
         audio, spans = paragraph([1000, 1000, 1000], pause_ms=2500)
-        bounds = [(spans[0][0], spans[1][0]),
-                  (spans[1][0], spans[2][0]),
-                  (spans[2][0], spans[2][1])]
-        clips = cut_paragraph(audio, bounds)
-        self.assertEqual(len(clips), 3)
-        # each clip holds its own 1 s burst plus the pads, not the pause
+        clips = cut_paragraph(audio, marks_for(spans))
         for clip in clips:
             self.assertLess(abs(len(clip) - 1400), 300)
 
-    def test_model_clock_shorter_than_the_audio_still_cuts(self):
-        # English v3 returns audio up to 12% longer than its own timings claim.
-        # The same boundaries compressed by 10% must still cut correctly.
-        audio, spans = paragraph([900, 1200, 700], pause_ms=600)
-        honest = [(spans[0][0], spans[0][1]), (spans[0][1], spans[1][1]), (spans[1][1], spans[2][1])]
-        squeezed = [(int(s * 0.9), int(e * 0.9)) for s, e in honest]
-        a = cut_paragraph(audio, honest)
-        b = cut_paragraph(audio, squeezed)
-        self.assertEqual([len(x) for x in a], [len(x) for x in b])
 
+class AlignmentMarks(unittest.TestCase):
+    """Reading the forced-alignment response: character START times only,
+    positional match against the text sent, punctuation carries no sound."""
 
-class OffsetTracking(unittest.TestCase):
-    """The model's clock falls behind the audio in STEPS, not by a stretch.
+    @staticmethod
+    def _fa(text: str, step_ms: int = 100) -> dict:
+        chars, t = [], 0.0
+        for ch in text:
+            chars.append({"text": ch, "start": t, "end": t + step_ms / 1000})
+            if ch.strip() and ch not in el._NO_SOUND:
+                t += step_ms / 1000
+        return {"characters": chars, "words": [], "loss": 0.5}
 
-    v3 inserts gaps between lines that voice_segments does not count, so the
-    audio runs ahead of the model by an offset that only grows, at line
-    boundaries. Rescaling every seam by (audio / model total) spread one such
-    step over the whole paragraph and, on 2026-09-13, moved a seam that sat
-    inside the right 1.26 s pause forward onto the 150 ms comma pause of the
-    next line. The speech check passed it — the moved clause was shorter than
-    its cap. These tests pin the two behaviours the offset model buys.
-    """
+    def test_first_and_last_voiced_character(self):
+        texts = ["はい、そうです。", "次は？"]
+        marks = alignment_marks(self._fa("\n".join(texts)), texts)
+        self.assertEqual(len(marks), 2)
+        # line 0: は at 0, す (last voiced) at 500 ms — the 、 and 。 are skipped
+        self.assertEqual(marks[0], (0, 500))
+        # line 1 starts after the 6 voiced characters of line 0
+        self.assertEqual(marks[1][0], 600)
+        self.assertLess(marks[0][1], marks[1][0])
 
-    def test_step_gap_later_in_the_paragraph_does_not_move_an_earlier_seam(self):
-        # line 0 | 1200 pause | line 1 = clause, 150 ms comma, rest | 1000 pause
-        # | 1500 ms gap the model does not count | line 2
-        audio = silence(50) + tone(3000) + silence(1200)
-        l1_start = len(audio)
-        audio += tone(1100) + silence(150) + tone(3000) + silence(1000)
-        audio += silence(1500) + tone(2000) + silence(50)
-        m0_end = l1_start                        # pause booked to line 0
-        m1_end = m0_end + 1100 + 150 + 3000 + 1000
-        bounds = [(50, m0_end), (m0_end, m1_end), (m1_end, m1_end + 2000)]
-        # sanity: the uniform rescale of the old code lands seam 0 past the pause
-        scale = len(audio) / bounds[-1][1]
-        self.assertGreater(m0_end * scale, l1_start + 400)
-        clips = cut_paragraph(audio, bounds)
-        # pads only eat silence: 50 ms of lead-in, 200 ms into the pause
-        self.assertLess(abs(len(clips[0]) - (3000 + 50 + 200)), 100)
-        self.assertLess(abs(len(clips[1]) - (1100 + 150 + 3000 + 400)), 100)
+    def test_normalised_text_is_refused(self):
+        texts = ["数字は 150 ミリ秒です。"]
+        fa = self._fa("数字は 百五十 ミリ秒です。")
+        with self.assertRaises(ElevenLabsError):
+            alignment_marks(fa, texts)
 
-    def test_early_seam_does_not_fall_back_onto_the_comma_behind_it(self):
-        # line 0 = 2000 speech, 200 ms comma, 1000 speech | 1000 pause | line 1.
-        # The model's seam is 750 ms EARLY (inside line 0's last word); the
-        # comma pause is only 250 ms behind it. Late is the rare direction and
-        # must cost more than a 750 ms jump forward.
-        audio = silence(50) + tone(2000) + silence(200) + tone(1000) + silence(1000) + tone(3000) + silence(50)
-        true_end = 50 + 2000 + 200 + 1000
-        seam = true_end - 750
-        bounds = [(50, seam), (seam, seam + 1000 + 3000)]
-        clips = cut_paragraph(audio, bounds)
-        self.assertLess(abs(len(clips[0]) - (2000 + 200 + 1000 + 50 + 200)), 100)
-        # and the plain assignment says the same without the span term:
-        # comma pause at frames 205-224, sentence pause at 325-424
-        runs = [(205, 224), (325, 424)]
-        self.assertEqual(assign_seams(runs, [seam]), [(325, 424)])
+    def test_line_with_only_punctuation_is_refused(self):
+        with self.assertRaises(ElevenLabsError):
+            alignment_marks(self._fa("はい\n…"), ["はい", "…"])
 
 
 class ResponseChecks(unittest.TestCase):
@@ -265,45 +222,6 @@ class ChunkPlanning(unittest.TestCase):
         self.assertEqual([len(c.indices) for c in plain], [10, 10, 10, 2])
 
 
-class SeamAssignment(unittest.TestCase):
-    """The seam->pause matching is a monotonic DP, not a greedy nearest walk.
-
-    Real paragraphs carry extra silent runs (comma pauses) between the sentence
-    pauses. A greedy walk can consume the wrong run for an early seam and then
-    fail on every later one; the DP pays a small local cost to keep the whole
-    assignment feasible. Frames are 10 ms.
-    """
-
-    def test_extra_candidates_between_real_pauses(self):
-        # runs at 1.0s, 1.4s(comma), 3.0s, 3.4s(comma), 5.0s ; seams at 1.0/3.0/5.0
-        runs = [(100, 110), (140, 150), (300, 310), (340, 350), (500, 510)]
-        picked = assign_seams(runs, [1000, 3000, 5000])
-        self.assertEqual(picked, [(100, 110), (300, 310), (500, 510)])
-
-    def test_greedy_trap_is_survived(self):
-        # seam 0's nearest run is the one seam 1 needs; a greedy pick would
-        # leave nothing for seam 1. The DP takes the second-nearest for seam 0.
-        runs = [(100, 110), (200, 210)]
-        picked = assign_seams(runs, [1900, 2000])
-        self.assertEqual(picked, [(100, 110), (200, 210)])
-
-    def test_assignment_is_strictly_increasing(self):
-        runs = [(100, 110), (300, 310), (500, 510), (700, 710)]
-        picked = assign_seams(runs, [1000, 3000, 7000])
-        self.assertEqual(picked, sorted(set(picked)))
-        self.assertEqual(len(picked), 3)
-
-    def test_too_few_pauses_raises(self):
-        with self.assertRaises(ElevenLabsError):
-            assign_seams([(100, 110)], [1000, 3000])
-
-    def test_seam_far_from_every_pause_raises(self):
-        far = BOUNDARY_WINDOW_MS * 4
-        with self.assertRaises(ElevenLabsError):
-            assign_seams([(100, 110), (200, 210)], [1000, far])
-
-
-@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not on PATH")
 class TimeStretch(unittest.TestCase):
     def test_identity_and_factor(self):
         clip = tone(2000)

@@ -12,13 +12,16 @@ whole paragraph far ahead of ``eleven_multilingual_v2`` with stitching.
 
 So this module sends a *paragraph* (consecutive lines, each with its own
 voice_id) to ``/v1/text-to-dialogue/with-timestamps`` and cuts the returned
-audio back into one clip per line. The cut points come from the model's own
-``voice_segments`` (per-input start/end seconds) — not from character counts or
-a speaking-rate estimate — and every cut is then verified by the energy mask
-in ``audio/splitter.py`` to sit in silence. A paragraph whose boundaries do not
-all land in silence is regenerated; if that keeps failing the run fails. There
-is no silence-fallback here (unlike the per-line engines), because a silent
-gap in a paragraph-cut would be a timing error, not a missing clip.
+audio back into one clip per line. Where each line sits in that audio comes
+from ``/v1/forced-alignment`` — the known text aligned against the returned
+audio, per character, by a separate model — not from character counts, a
+speaking-rate estimate, or the generator's own ``voice_segments`` (see the
+note above ``cut_paragraph`` for why those were dropped). Every seam is a
+silent run inside the alignment's interval for it, verified by the energy mask
+in ``audio/splitter.py``. A paragraph with two lines run together with no pause
+is regenerated; if that keeps failing the run fails. There is no
+silence-fallback here (unlike the per-line engines), because a silent gap in a
+paragraph-cut would be a timing error, not a missing clip.
 
 This is the one sanctioned exception to the "no whole-paragraph TTS" rule in
 CLAUDE.md; the rule text records why.
@@ -226,10 +229,6 @@ def _post_dialogue(
     raise ElevenLabsError("unreachable")  # pragma: no cover
 
 
-# ---------------------------------------------------------------------------
-# Cutting + verification
-# ---------------------------------------------------------------------------
-
 def boundaries_from_response(resp: dict, chunk: _Chunk) -> list[tuple[int, int]]:
     """Per-line (start_ms, end_ms) from ``voice_segments``, cross-checked.
 
@@ -261,99 +260,56 @@ def boundaries_from_response(resp: dict, chunk: _Chunk) -> list[tuple[int, int]]
     return out
 
 
-# --- Where the cuts really come from -------------------------------------
+# ---------------------------------------------------------------------------
+# Cutting: forced alignment decides the seams
+# ---------------------------------------------------------------------------
 #
-# Measured on v3 output (2026-09-09): the model's per-line end times can run
-# up to ~1 s EARLY (the last input of a dialogue ended at 5.36 s while speech
-# went on to 6.32 s), and Japanese has 30–80 ms silent stop closures (促音,
-# k/t closures) inside words. So a boundary can't be trusted to the frame and
-# a "nearest silent frame" rule would cut inside words — that was the first
-# version, and it clipped sentence endings.
+# Where each line starts and ends inside the paragraph audio comes from
+# POST /v1/forced-alignment: the known text, aligned against the returned audio
+# per character by a separate model. On 2026-09-16 that replaced two
+# generations of seam-finding from the generator's own ``voice_segments`` —
+# first a uniform rescale of its clock, then an offset-tracking DP backed by a
+# speech-volume cross-check. Each was tuned against the failures seen so far
+# and each fix uncovered the next mode: the clock drifts in steps, a pause is
+# booked to either neighbour, seams run early by up to a second. The last
+# version accepted a paragraph with two seams sitting in the comma pauses of
+# the FOLLOWING lines ("そこでやっと、" / "手順が長く、"), a whole clause in the
+# wrong clip, and a forced-alignment audit of the 38 delivered paragraphs found
+# three such cascades (10 lines) that every speech-volume check had passed. A
+# volume check cannot tell a clause from a pause; the alignment can, and it
+# does not share the generator's clock. Cost: ~18 credits per minute of audio
+# (677 credits for that 38-minute audit), about 7% on top of synthesis, paid
+# once and cached beside the paragraph.
 #
-# What IS reliable: between two lines v3 leaves a long true pause (500–1000 ms
-# of near-digital silence, floor ≈ −85 dBFS) and the model boundary lands
-# within about a second of it. So the cut points are the long silent runs of
-# the paragraph; the model boundary only picks WHICH run separates line k from
-# k+1. Each boundary must map to its own run, in order, or the paragraph is
-# rejected and regenerated.
+# Only character START times are used. The alignment's end times are
+# contiguous — a line's last character absorbs the pause after it, exactly as
+# the generator's own alignment does — so "where line k ends" is never read
+# from them. The seam between k and k+1 is a silent run that starts after the
+# last character of k has begun and before the first character of k+1 begins;
+# the longest such run is the inter-line pause, and the comma pauses inside
+# either line lie outside that interval by construction. No run there means
+# the two lines were spoken with no pause between them, and the paragraph is
+# regenerated: the CLAUDE.md rule allows a cut only in verified silence.
+
 SOUND_DBFS = -55.0          # frames above this are "sound" (keeps the quiet
                             # devoiced endings like ます/です that sit 35 dB
                             # below the peak but far above the −85 dB floor)
 # Measured word-internal silences: Japanese 促音 / stop closures 30-80 ms,
-# English stop closures 60-90 ms. Real inter-sentence pauses are 240-870 ms in
-# both languages. 120 ms sits in that gap. Extra candidates (commas) are
-# harmless — the assignment below picks which run belongs to which seam.
+# English stop closures 60-90 ms. Real inter-line pauses are 240-870 ms in
+# both languages. 120 ms sits in that gap.
 MIN_PAUSE_MS = 120
 EDGE_PAD_MS = 200           # silence kept before the first / after the last
                             # sound of a line (same figure as the splitter)
+# The energy mask hears a consonant onset 100-200 ms before the aligner places
+# the character (measured on the 38-paragraph audit: silent runs ended 50-210 ms
+# before the next line's first-character start). A candidate run may therefore
+# begin this much before the last character's start and end this much after
+# the next first character's start.
+ALIGN_SLACK_MS = 250
 
-# How the model's clock relates to the audio (measured 2026-09-13 on 32 Japanese
-# + 14 English cached paragraphs, 385 seams):
-#
-# - Inside a line the model's timeline matches the audio. Between lines the
-#   audio can be LONGER than the timeline — v3 inserts gaps that voice_segments
-#   does not count — so (audio position − model time) is an offset that only
-#   ever GROWS along a paragraph, in steps at line boundaries. It is not a
-#   uniform stretch: 17 of 32 Japanese paragraphs had zero total drift and one
-#   had 9.7%, and inside a drifting paragraph the first seams sat within 70 ms
-#   of their pauses while the later ones were 1.5–3.5 s off.
-# - The seam time itself lands anywhere INSIDE the right pause: the model
-#   books the pause to the line before or the line after, so consecutive seams
-#   sit at a pause end, then a pause start, without the offset changing.
-# - When the seam misses its pause it is EARLY (documented up to ~1 s), inside
-#   the last word of the line. Late seams are rare and small (worst seen 380 ms).
-#
-# The previous version rescaled every seam by (audio length / model total) —
-# a uniform stretch — and on 2026-09-13 that pushed a seam that sat inside the
-# correct 1.26 s pause 1.4 s forward, next to the 150 ms comma pause of the
-# NEXT line ("寄せています。」‖「そのサーバーが落ちたら、"), which the nearest-pause
-# rule then took. The clause moved into the wrong clip and the speech check
-# below let it through: 1.1 s of speech is under its 1.4 s cap.
-#
-# So the assignment (assign_seams) tracks the offset instead of rescaling. A
-# run is feasible for seam k if the offset that puts the seam inside it is at
-# least the current offset (minus a little slack for a late seam); taking a run
-# further ahead is a JUMP that raises the offset for every later seam and costs
-# its size; a seam behind the run is tolerated up to SEAM_LATE_SLACK_MS but
-# costs SEAM_LATE_WEIGHT× — late is the rare direction, and pricing it like an
-# early seam let the DP buy a 310 ms late excursion into a comma pause instead
-# of a 1070 ms jump to the real one (b78a4916, seam 4; the male/female pitch of
-# the disputed second settled it). A third term keeps the audio span of a line
-# from exceeding the model's own span for it by more than jitter, since the
-# timeline never under-counts inside a line.
-#
-# Checked against pitch at the 59 Q↔A voice changes of the 2026-09-13 script
-# (the two voices are 130 Hz vs 250 Hz, so the second before and after each
-# chosen pause identifies the speaker): the rescaled DP had 1 wrong seam, this
-# one has 0; on the 14 English paragraphs the two agree on every seam.
-BOUNDARY_WINDOW_MS = 2500       # largest offset jump accepted at one seam
-SEAM_LATE_SLACK_MS = 800        # how far behind a pause a seam may sit
-SEAM_LATE_WEIGHT = 4            # ... and how dearly, per ms, relative to a jump
-SPAN_TOLERANCE_MS = 400         # a line's audio span may exceed the model's
-SPAN_TOLERANCE_REL = 0.08       # span by this much before it costs
-
-# The clip-vs-model check counts SOUND frames on both sides rather than total
-# duration. Comparing total durations was biased: the model's per-line spans are
-# contiguous, so span(k) swallows the pause FOLLOWING line k, while the clip
-# deliberately keeps only EDGE_PAD_MS of it. Measured over the 50 cached
-# paragraphs (488 clips, two scripts) the clip therefore ran short by a median
-# 789 ms and the shortfall tracked the pause length (r = +0.69) — so material
-# whose pauses ran long was rejected for having perfectly correct cuts. That is
-# what happened on 2026-09-12: 5 of 36 paragraphs were regenerated (~800 wasted
-# credits) on a script whose inter-line pauses averaged 1210 ms against the
-# 650 ms of the 2026-09-09 material this check was first tuned on, and 30 of its
-# 355 accepted clips sat within 500 ms of the same false rejection.
-#
-# Counting speech on both sides removes the pause from both. The separation is
-# then clean and ABSOLUTE: a correct assignment's speech error is bounded by the
-# model's own boundary imprecision (up to ~1 s early) and never exceeded 1150 ms,
-# while shifting every seam to the next pause never scored below 1730 ms. The cap
-# sits in that gap and holds 0 false rejections / 29 of 29 shifts caught anywhere
-# in 1300-1500 ms, so it is not balanced on a single fitted point. The relative
-# term keeps power on SHORT lines, where a shift displaces less speech.
-SPEECH_TOLERANCE_MS = 400        # absolute floor
-SPEECH_TOLERANCE_REL = 0.6       # ... or this fraction of the line's own speech
-SPEECH_TOLERANCE_CAP_MS = 1400   # ... but never more than this
+# Characters the aligner gives no sound of their own (zero-length or absorbed
+# spans); skipped when picking a line's first / last voiced character.
+_NO_SOUND = set("、。，．,.!?！？「」『』（）()…・:：;；\"'“”‘’-—–~〜 \t\n")
 
 
 def _frame_dbfs(audio: AudioSegment):
@@ -394,155 +350,132 @@ def silent_runs(mask, min_ms: int = MIN_PAUSE_MS) -> list[tuple[int, int]]:
     return runs
 
 
-def assign_seams(
-    runs: list[tuple[int, int]],
-    seam_times_ms: list[int],
-    line_spans_ms: list[int] | None = None,
-    first_sound_ms: int = 0,
-) -> list[tuple[int, int]]:
-    """Match each model seam to its own silent run, in order, globally.
+def forced_align(
+    audio_path: Path,
+    texts: list[str],
+    session: requests.Session,
+    label: str = "",
+) -> dict:
+    """POST one paragraph's audio and text to /v1/forced-alignment.
 
-    ``seam_times_ms`` are the model's RAW end times of lines 0..K-2 (no
-    rescaling — see the note by BOUNDARY_WINDOW_MS for why). ``runs`` are the
-    candidate pauses in frames. ``line_spans_ms`` (the model's per-line span,
-    K entries) and ``first_sound_ms`` enable the span term; without them only
-    the offset terms apply (the unit tests use that form).
-
-    The state is (seam, run, offset). The offset — audio position minus model
-    time — starts at 0 and can only rise, so its value is always "the run
-    start minus the seam time of the last jump", which keeps the state small.
-    Cost of putting seam k in run (a, b), with the offset d carried in:
-      - a - t_k <= d <= b - t_k : the seam sits inside the run; free
-      - a - t_k >  d            : jump; d becomes a - t_k; costs the jump,
-                                  refused beyond BOUNDARY_WINDOW_MS
-      - b - t_k <  d            : the seam sits after the run (model late);
-                                  allowed up to SEAM_LATE_SLACK_MS and costs
-                                  SEAM_LATE_WEIGHT per ms; d is unchanged
-    plus, when spans are given, the amount by which the audio between the
-    previous run and this one exceeds the model's span for the line.
-    A greedy nearest-run walk would fail here for the same reason it did
-    before: comma pauses sit between the real ones and one early mis-pick
-    strands every later seam. The DP pays a local cost to keep the whole
-    assignment consistent.
+    Returns the raw response (``characters`` / ``words`` / ``loss``); read it
+    with ``alignment_marks``. Retries the same transient statuses as
+    ``_post_dialogue``; anything else is a configuration problem and raises.
     """
-    n_seams, n_runs = len(seam_times_ms), len(runs)
-    if n_seams == 0:
-        return []
-    if n_runs < n_seams:
+    url = f"{API_BASE}/forced-alignment"
+    headers = {"xi-api-key": _api_key()}
+    text = "\n".join(texts)
+    for attempt in range(1, MAX_HTTP_RETRIES + 1):
+        with open(audio_path, "rb") as fh:
+            r = session.post(
+                url, headers=headers, timeout=180,
+                files={"file": (audio_path.name, fh, "audio/mpeg")},
+                data={"text": text},
+            )
+        if r.status_code == 200:
+            return r.json()
+        try:
+            detail = r.json().get("detail", {})
+            code = detail.get("status") or detail.get("code") or ""
+            message = detail.get("message") or r.text[:300]
+        except Exception:
+            code, message = "", r.text[:300]
+        if r.status_code in TRANSIENT_STATUS and attempt < MAX_HTTP_RETRIES:
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+            logger.warning(
+                f"⟳ ElevenLabs alignment retry {attempt}/{MAX_HTTP_RETRIES} in "
+                f"{delay:.1f}s (HTTP {r.status_code} {code}) {label}"
+            )
+            time.sleep(delay)
+            continue
         raise ElevenLabsError(
-            f"only {n_runs} pause(s) >= {MIN_PAUSE_MS} ms for {n_seams} seam(s); "
-            f"the model ran two lines together"
+            f"ElevenLabs forced-alignment HTTP {r.status_code} {code}: {message} {label}"
         )
-    if line_spans_ms is not None and len(line_spans_ms) != n_seams + 1:
-        raise ValueError("line_spans_ms must have one entry per line")
+    raise ElevenLabsError("unreachable")  # pragma: no cover
 
-    def offset_of(origin) -> int:
-        # origin = (seam, run) of the last jump; None = no jump yet
-        if origin is None:
-            return 0
-        return runs[origin[1]][0] * FRAME_MS - seam_times_ms[origin[0]]
 
-    def span_cost(k: int, r_prev: int | None, r: int) -> float:
-        if line_spans_ms is None:
-            return 0.0
-        start = (runs[r_prev][1] + 1) * FRAME_MS if r_prev is not None else first_sound_ms
-        span = runs[r][0] * FRAME_MS - start
-        allowed = line_spans_ms[k] + SPAN_TOLERANCE_MS + SPAN_TOLERANCE_REL * line_spans_ms[k]
-        return max(0.0, span - allowed)
+def alignment_marks(fa: dict, texts: list[str]) -> list[tuple[int, int]]:
+    """Per line: (start of its first voiced character, start of its last), ms.
 
-    # best[k][(run, origin)] = (cost, previous key)
-    best: list[dict] = [dict() for _ in range(n_seams)]
-
-    def relax(k: int, r: int, origin, cost: float, prev_key, r_prev: int | None) -> None:
-        d = offset_of(origin)
-        lo = runs[r][0] * FRAME_MS - seam_times_ms[k]
-        hi = runs[r][1] * FRAME_MS - seam_times_ms[k]
-        cost += span_cost(k, r_prev, r)
-        if hi < d - SEAM_LATE_SLACK_MS:
-            return
-        if lo > d:
-            if lo - d > BOUNDARY_WINDOW_MS:
-                return
-            key, cost = (r, (k, r)), cost + (lo - d)
-        else:
-            key, cost = (r, origin), cost + SEAM_LATE_WEIGHT * max(0, d - hi)
-        cur = best[k].get(key)
-        if cur is None or cost < cur[0]:
-            best[k][key] = (cost, prev_key)
-
-    for r in range(n_runs):
-        relax(0, r, None, 0.0, None, None)
-    for k in range(1, n_seams):
-        for (r_prev, origin), (cost, _) in best[k - 1].items():
-            for r in range(r_prev + 1, n_runs):
-                relax(k, r, origin, cost, (r_prev, origin), r_prev)
-        if not best[k]:
-            break
-    if not best[n_seams - 1]:
-        stuck = next(k for k in range(n_seams) if not best[k])
+    Characters are matched positionally against the text that was sent
+    (``"\n".join(texts)``). A mismatch means the service normalised the text,
+    so the marks would describe something else — that raises rather than
+    guessing. Punctuation and whitespace carry no sound (see ``_NO_SOUND``).
+    """
+    chars = fa.get("characters") or []
+    joined = "\n".join(texts)
+    got = "".join(str(c.get("text", "")) for c in chars)
+    if got != joined:
+        at = next((i for i, (a, b) in enumerate(zip(got, joined)) if a != b), min(len(got), len(joined)))
         raise ElevenLabsError(
-            f"no pause >= {MIN_PAUSE_MS} ms fits the seam between lines {stuck} "
-            f"and {stuck + 1} (model {seam_times_ms[stuck]} ms) consistently with "
-            f"the seams before it"
+            f"forced alignment returned {len(got)} characters for {len(joined)} "
+            f"sent; first difference at {at}: {got[at:at + 12]!r} vs {joined[at:at + 12]!r}"
         )
-    key = min(best[n_seams - 1], key=lambda x: best[n_seams - 1][x][0])
-    picked: list[int] = []
-    for k in range(n_seams - 1, -1, -1):
-        picked.append(key[0])
-        key = best[k][key][1]
-    return [runs[r] for r in picked[::-1]]
+    marks: list[tuple[int, int]] = []
+    pos = 0
+    for k, text in enumerate(texts):
+        voiced = [c for c in chars[pos:pos + len(text)] if c["text"] not in _NO_SOUND]
+        if not voiced:
+            raise ElevenLabsError(f"line {k} has no voiced characters: {text!r}")
+        marks.append((
+            int(round(float(voiced[0]["start"]) * 1000)),
+            int(round(float(voiced[-1]["start"]) * 1000)),
+        ))
+        pos += len(text) + 1
+    for k in range(1, len(marks)):
+        if marks[k][0] < marks[k - 1][1]:
+            raise ElevenLabsError(
+                f"alignment out of order: line {k} starts at {marks[k][0]} ms, "
+                f"before line {k - 1}'s last character at {marks[k - 1][1]} ms"
+            )
+    return marks
 
 
 def cut_paragraph(
     audio: AudioSegment,
-    boundaries: list[tuple[int, int]],
+    marks: list[tuple[int, int]],
 ) -> list[AudioSegment]:
-    """Cut one paragraph into per-line clips at verified inter-line pauses.
+    """Cut one paragraph into per-line clips at the aligned inter-line pauses.
 
-    ``boundaries`` are the model's contiguous (start_ms, end_ms) per line. For
-    each seam between line k and k+1 a long silent run is chosen by
-    ``assign_seams`` (the model's seam time plus a tracked offset must fall
-    inside it); runs must be distinct and in script order. Line k then ends
-    EDGE_PAD_MS into that run
-    and line k+1 starts EDGE_PAD_MS before the run ends — pads only ever eat
-    silence. The paragraph edges use the leading / trailing silence the same
-    way. Every clip therefore starts and ends in verified silence, and a
-    paragraph with a missing pause raises ElevenLabsError.
+    ``marks`` are ``alignment_marks``: per line, the start of its first and of
+    its last voiced character. The seam between line k and k+1 is the longest
+    silent run (>= MIN_PAUSE_MS) that begins once k's last character has begun
+    and before k+1's first character begins. Line k ends EDGE_PAD_MS into that
+    run and line k+1 starts EDGE_PAD_MS before it ends, so every clip edge is
+    silent by construction and the pads only ever eat silence. The paragraph
+    edges use the leading / trailing silence the same way. A seam interval with
+    no silent run raises ElevenLabsError — the lines were run together.
     """
     mask = sound_mask(audio)
     n = len(mask)
     if n == 0 or not mask.any():
         raise ElevenLabsError("paragraph audio is empty or silent")
+    if len(marks) == 0:
+        raise ElevenLabsError("no lines to cut")
     runs = silent_runs(mask)
-    # interior runs only: a leading/trailing silence is not a seam
-    seams_available = [
-        (a, b) for (a, b) in runs if a > 0 and b < n - 1
-    ]
-
     pad = EDGE_PAD_MS // FRAME_MS
+    slack = ALIGN_SLACK_MS // FRAME_MS
     first_sound = int(mask.argmax())
     last_sound = n - 1 - int(mask[::-1].argmax())
 
-    # Raw model times: the offset between the model's clock and the audio is
-    # tracked inside assign_seams (see the note by BOUNDARY_WINDOW_MS), not
-    # removed by rescaling — the drift is stepwise, not a uniform stretch.
-    chosen = assign_seams(
-        seams_available,
-        [e for (_, e) in boundaries[:-1]],
-        [e - s for (s, e) in boundaries],
-        first_sound * FRAME_MS,
-    )
-    # The speech cross-check below still compares against the model span on a
-    # uniformly rescaled clock; it is a coarse, independent guard (its
-    # tolerance is wider than any offset step seen) and was tuned that way.
-    model_total = boundaries[-1][1]
-    scale = (len(audio) / model_total) if model_total > 0 else 1.0
+    seams: list[tuple[int, int]] = []
+    for k in range(len(marks) - 1):
+        lo = marks[k][1] // FRAME_MS - slack        # k's last character has begun
+        hi = marks[k + 1][0] // FRAME_MS + slack    # k+1's first character begins
+        cands = [(a, b) for (a, b) in runs if lo <= a < hi and a > 0 and b < n - 1]
+        if not cands:
+            raise ElevenLabsError(
+                f"no pause >= {MIN_PAUSE_MS} ms between lines {k} and {k + 1} "
+                f"(alignment puts the gap at {marks[k][1]}–{marks[k + 1][0]} ms)"
+            )
+        seams.append(max(cands, key=lambda r: r[1] - r[0]))
+    for k in range(1, len(seams)):
+        if seams[k][0] <= seams[k - 1][0]:
+            raise ElevenLabsError(f"lines {k} and {k + 1} share a single pause")
 
     starts = [max(0, first_sound - pad)]
     ends: list[int] = []
-    for (a, b) in chosen:
-        # line ends `pad` frames into the pause, next line starts `pad` before it
-        # ends; both stay inside the run so the cut is in silence by construction
+    for (a, b) in seams:
         ends.append(min(a + pad, b))
         starts.append(max(b - pad + 1, a + 1))
     ends.append(min(n, last_sound + 1 + pad))
@@ -553,30 +486,13 @@ def cut_paragraph(
             raise ElevenLabsError(f"cut collapsed at line {k}: frames {sf}–{ef}")
         if (sf > 0 and mask[sf]) or (ef < n and mask[ef - 1]):
             raise ElevenLabsError(f"cut of line {k} is not in silence")  # pragma: no cover
-        clips.append(audio[sf * FRAME_MS: ef * FRAME_MS])
-
-    # Landing every cut in silence is not enough: a seam matched to the wrong
-    # pause also lands in silence, it just puts the wrong sentence in the clip.
-    # The independent check is how much SPEECH the clip holds against how much
-    # speech sits inside the model's own span for that line. Both sides count
-    # sound frames only, so the inter-line pause — which the model's span
-    # includes and the clip drops — cancels instead of biasing the comparison
-    # (see the note by SPEECH_TOLERANCE_CAP_MS).
-    for k, (sf, ef, (s_ms, e_ms)) in enumerate(zip(starts, ends, boundaries)):
-        a = max(0, min(n, int(s_ms * scale) // FRAME_MS))
-        b = max(0, min(n, int(e_ms * scale) // FRAME_MS))
-        expected = int(mask[a:b].sum()) * FRAME_MS
-        actual = int(mask[sf:ef].sum()) * FRAME_MS
-        tol = min(
-            SPEECH_TOLERANCE_CAP_MS,
-            max(SPEECH_TOLERANCE_MS, SPEECH_TOLERANCE_REL * expected),
-        )
-        if abs(actual - expected) > tol:
-            raise ElevenLabsError(
-                f"line {k} holds {actual} ms of speech but the model says "
-                f"{expected} ms (tolerance {tol:.0f} ms) — the seams are matched "
-                f"to the wrong pauses"
+        first_char, last_char = marks[k]
+        if first_char < sf * FRAME_MS - ALIGN_SLACK_MS or last_char > ef * FRAME_MS:
+            raise ElevenLabsError(  # pragma: no cover — excluded by the seam intervals
+                f"clip of line {k} ({sf * FRAME_MS}–{ef * FRAME_MS} ms) does not "
+                f"contain its own text ({first_char}–{last_char} ms)"
             )
+        clips.append(audio[sf * FRAME_MS: ef * FRAME_MS])
     return clips
 
 
@@ -647,6 +563,27 @@ def cache_store(key: str, raw: Path, bounds: list[tuple[int, int]], chunk: _Chun
         logger.warning(f"ElevenLabs cache write failed: {e}")
 
 
+# The forced alignment is paid for per minute of audio and describes exactly
+# one audio file, so it lives beside that file as ``<key>.fa.json`` (the raw
+# service response). A cached paragraph without one is aligned on first use.
+def alignment_load(key: str) -> dict | None:
+    f = CACHE_DIR / f"{key}.fa.json"
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return None
+
+
+def alignment_store(key: str, fa: dict) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (CACHE_DIR / f"{key}.fa.json").write_text(json.dumps(fa, ensure_ascii=False))
+    except Exception as e:  # a cache problem must never fail a run
+        logger.warning(f"ElevenLabs alignment cache write failed: {e}")
+
+
 # A rejected attempt is thrown away by design — bad audio must never reach the
 # cache. But that left nothing to diagnose WITH: on 2026-09-12 five paragraphs
 # were rejected, and by the time anyone looked, the audio was gone (the temp file
@@ -656,8 +593,8 @@ def cache_store(key: str, raw: Path, bounds: list[tuple[int, int]], chunk: _Chun
 #
 # Kept by default, not behind a flag: these failures are unpredictable, and an
 # env var you have to set in advance is useless the first time one happens.
-# ``voice_segments`` is the part that matters most — the cut is derived from it
-# and it cannot be recovered from the audio afterwards.
+# The forced alignment is the part that matters most — the cut is derived from
+# it — and ``voice_segments`` is kept alongside for comparison.
 REJECT_DIR = Path(os.environ.get("ELEVENLABS_REJECT_DIR") or (CACHE_DIR / "rejected"))
 REJECT_KEEP = 30   # newest rejected attempts kept; ~1 MB each
 
@@ -680,6 +617,7 @@ def reject_store(
     attempt: int,
     seed: int,
     err: Exception,
+    alignment: dict | None = None,
 ) -> Path | None:
     """Keep one rejected attempt so the next occurrence is diagnosable.
 
@@ -702,6 +640,7 @@ def reject_store(
                     "texts": chunk.texts,
                     "voice_ids": chunk.voice_ids,
                     "voice_segments": resp.get("voice_segments"),
+                    "forced_alignment": alignment,
                     "character_cost": resp.get("character_cost"),
                 },
                 ensure_ascii=False,
@@ -770,6 +709,27 @@ def generate_elevenlabs_target_audio(
     results: dict[int, list[AudioSegment]] = {}
     session = requests.Session()
 
+    def _align(audio_path: Path, chunk: _Chunk, key: str | None) -> tuple[dict, list[tuple[int, int]]]:
+        """Alignment for this audio: from the cache sidecar when ``key`` is given
+        and one exists, else one paid call (~18 credits / minute of audio)."""
+        fa = alignment_load(key) if key else None
+        label = f"(lines {chunk.indices[0]}–{chunk.indices[-1]})"
+        if fa is None:
+            secs = len(AudioSegment.from_file(audio_path, format="mp3")) / 1000
+            logger.info(f"  aligning paragraph audio {label}: {secs:.0f} s, ~{secs * 0.3:.0f} credits")
+            fa = forced_align(audio_path, chunk.texts, session, label)
+        return fa, alignment_marks(fa, chunk.texts)
+
+    def _provenance(chunk: _Chunk, bounds, marks, fa, clips, extra: dict) -> dict:
+        return {
+            "lines": chunk.indices,
+            "model_boundaries_ms": bounds,
+            "alignment_marks_ms": marks,
+            "alignment_loss": fa.get("loss"),
+            "clip_ms": [len(c) for c in clips],
+            **extra,
+        }
+
     def _work(ci: int) -> None:
         chunk = chunks[ci]
         seed = random.randint(0, 2**31 - 1)
@@ -781,28 +741,32 @@ def generate_elevenlabs_target_audio(
         if cached is not None:
             audio, bounds = cached
             try:
-                results[ci] = cut_paragraph(audio, bounds)
                 audio.export(raw, format="mp3")
-                (work_dir / f"el_para_{ci:03d}.json").write_text(
-                    json.dumps({"lines": chunk.indices, "model_boundaries_ms": bounds,
-                                "clip_ms": [len(c) for c in results[ci]], "cached": True},
-                               ensure_ascii=False))
-                logger.info(f"  paragraph {ci} (lines {chunk.indices[0]}–{chunk.indices[-1]}) from cache, 0 credits")
+                fa, marks = _align(raw, chunk, key)
+                results[ci] = cut_paragraph(audio, marks)
+                alignment_store(key, fa)
+                (work_dir / f"el_para_{ci:03d}.json").write_text(json.dumps(
+                    _provenance(chunk, bounds, marks, fa, results[ci], {"cached": True}),
+                    ensure_ascii=False))
+                logger.info(f"  paragraph {ci} (lines {chunk.indices[0]}–{chunk.indices[-1]}) from cache, 0 synthesis credits")
                 return
-            except ElevenLabsError:
-                pass  # cached audio no longer cuts cleanly — regenerate below
+            except ElevenLabsError as e:
+                logger.warning(f"  cached paragraph {ci} no longer cuts ({e}); regenerating")
 
         for attempt in range(1, MAX_REGENERATE + 2):
             resp = _post_dialogue(chunk, model_id, output_format, stability, seed, session)
             raw.write_bytes(base64.b64decode(resp["audio_base64"]))
+            fa: dict | None = None
             try:
                 bounds = boundaries_from_response(resp, chunk)
                 audio = AudioSegment.from_file(raw, format="mp3")
-                clips = cut_paragraph(audio, bounds)
+                fa, marks = _align(raw, chunk, None)
+                clips = cut_paragraph(audio, marks)
                 cache_store(key, raw, bounds, chunk)
+                alignment_store(key, fa)
             except ElevenLabsError as e:
                 last_err = e
-                kept = reject_store(raw, resp, chunk, ci, attempt, seed, e)
+                kept = reject_store(raw, resp, chunk, ci, attempt, seed, e, alignment=fa)
                 logger.warning(
                     f"⟳ ElevenLabs paragraph {ci} (lines "
                     f"{chunk.indices[0]}–{chunk.indices[-1]}) failed boundary "
@@ -811,19 +775,11 @@ def generate_elevenlabs_target_audio(
                 )
                 seed = random.randint(0, 2**31 - 1)
                 continue
-            # Provenance: which model boundaries produced which clip.
-            (work_dir / f"el_para_{ci:03d}.json").write_text(
-                json.dumps(
-                    {
-                        "lines": chunk.indices,
-                        "model_boundaries_ms": bounds,
-                        "clip_ms": [len(c) for c in clips],
-                        "seed": seed,
-                        "character_cost": resp.get("character_cost"),
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            # Provenance: which alignment produced which clip.
+            (work_dir / f"el_para_{ci:03d}.json").write_text(json.dumps(
+                _provenance(chunk, bounds, marks, fa, clips,
+                            {"seed": seed, "character_cost": resp.get("character_cost")}),
+                ensure_ascii=False))
             results[ci] = clips
             keep = os.environ.get("ELEVENLABS_KEEP_DIR")
             if keep:
