@@ -233,6 +233,10 @@ interview:
       openai:
         interviewer_voice: "echo"
         interviewee_voice: "coral"
-      elevenlabs:                              # A reuses the text voice
+      elevenlabs:                              # A no longer reuses the text voice
         interviewer_voice: "8FuuqoKHuM48hIEwni5e"   # Shohei - Warm, Clear and Husky
-        interviewee_voice: "GKDaBI8TKSBJVhsCLD6n"   # Asahi - Calm and Natural (2026-09-13; was Morioki 8EkOjt4xTPGMclNlh1pk)
+        # Asahi -> Riku (09-16，未入库) -> Gojo (09-19)。Riku KJje3wzepLiSIQjVGCB6 行间间隔
+        # 中位只有 640ms，贴着切点判据跑，09-19 三份稿子因此重生成 7 次；Gojo 1760ms、
+        # 静音帧 36.5%，十个候选里余量最大。切不开的：Koichi Yashiro 4oeIbMTUt5QeJy4ZX1FC
+        # (行间不停顿)、Hideki nHEVPT3LS1V37bXZNr82 (间隔够长但底噪不降)。见 docs/elevenlabs_plan.md
+        interviewee_voice: "urE3OJfJRxJuk9kAMN0Y"   # Gojo - Calm, Clear and Measured

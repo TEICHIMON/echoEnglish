@@ -3,6 +3,7 @@
 /1.m4a
 /1.lrc
 /.env
+/.env.bak-*
 /google-credentials.json
 /*-credentials.json
 /rclone.conf
