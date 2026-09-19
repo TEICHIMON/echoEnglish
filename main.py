@@ -99,7 +99,7 @@ INTERVIEW_LANG_PRESETS: dict[str, dict[str, object]] = {
         },
         "elevenlabs": {
             "interviewer_voice": "8FuuqoKHuM48hIEwni5e",  # Shohei — warm male
-            "interviewee_voice": "GKDaBI8TKSBJVhsCLD6n",  # Asahi — calm male (2026-09-13; was Morioki)
+            "interviewee_voice": "urE3OJfJRxJuk9kAMN0Y",  # Gojo — calm, clear male (2026-09-19; was Riku, 行间只有 640ms。见 docs/elevenlabs_plan.md 的候选表)
         },
     },
     "en": {
